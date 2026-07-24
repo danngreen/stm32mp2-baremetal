@@ -13,6 +13,7 @@ dbg.print(f"Flashing via python rcl {elfpath}...")
 # back up on the MP25, so the first attach usually fails. Reset once, then retry
 # the attach a few times (reconfiguring each try) so one `make flash-t32` is
 # enough -- no manual re-run.
+dbg.cmd("system.mode down")
 
 dbg.cmd("reset")
 
