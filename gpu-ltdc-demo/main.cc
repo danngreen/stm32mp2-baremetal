@@ -5,19 +5,26 @@
 #include "etna.hh"
 #include "etna_3d.hh"
 #include "ltdc.hh"
-#include "panel_etml0700z9.hh"
+
+#ifdef DDRPERF
+#include "perfmon.hh"
+#endif
+
+#ifdef DEVBOARD_0_1
+#include "panel_ili9881c.hh" // custom devboard: ER-TFT050-10, 720x1280 MIPI-DSI
+#else
+#include "panel_etml0700z9.hh" // EV1: B-LVDS7-WSVGA, 1024x600 LVDS
+#endif
+
 #include "print/print.hh"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
 
-//  gpu-ltdc-demo -- N spinning cubes bouncing around in a shared 3D scene
-// =============================================================================
-
 namespace
 {
-using namespace Panel; // HActive=1024, VActive=600
+using namespace Panel; // EV1 LVDS: 1024x600  /  devboard DSI: 720x1280
 constexpr uint32_t FbStride = HActive * 4;
 constexpr uint32_t FbSize = FbStride * VActive;
 constexpr uint32_t Background = 0xFF101828;
@@ -31,8 +38,14 @@ constexpr uint32_t DepthStride = rtpw * 2;
 constexpr uint32_t DepthSize = DepthStride * rtph;
 
 constexpr float Aspect = float(HActive) / float(VActive);
-constexpr float BX = 2.3f, BY = 1.3f;			 // world XY bounce bounds (keep cubes on-screen)
-constexpr float PZ_NEAR = -2.0f, PZ_FAR = -9.0f; // depth-drift range (near..far, no clipper)
+
+// FOV terms for cube_mvp() in cube_scene.hh. This adjusts for different screen sizes.
+constexpr float ProjF = 2.0f; // == cube_mvp's f
+constexpr float Fx = (Aspect >= 1.0f) ? ProjF / Aspect : ProjF;
+constexpr float Fy = (Aspect >= 1.0f) ? ProjF : ProjF * Aspect;
+constexpr float BoundK = 2.65f;						// world-extent * F that keeps a cube on-screen (tuned on EV1)
+constexpr float BX = BoundK / Fx, BY = BoundK / Fy; // world XY bounce bounds
+constexpr float PZ_NEAR = -2.0f, PZ_FAR = -9.0f;	// depth-drift range (near..far, no clipper)
 
 constexpr uint32_t NCubes = 12;
 struct Cube {
@@ -62,6 +75,10 @@ int main()
 		print("FAILED: GPU init\n");
 		panic();
 	}
+
+#ifdef DDRPERF
+	perfmon::ddr_init();
+#endif
 
 	etna::Bo rt = gpu.alloc(RtSize);
 	etna::Bo depth = gpu.alloc(DepthSize);
@@ -197,7 +214,7 @@ int main()
 	};
 
 	if (!display_init(fbs[0].gpu_addr())) { // full-screen single layer
-		print("FAILED: LVDS PLL never locked\n");
+		print("FAILED: display PLL never locked\n");
 		while (true)
 			asm volatile("wfe");
 	}
@@ -219,12 +236,31 @@ int main()
 			continue;
 		frame_ready.store(false, std::memory_order_release);
 
+#ifdef DDRPERF
+		// Once, after warm-up, bracket a single render with the DDRPERFM probe so
+		// we can see whether the render is DDR-bandwidth-bound and at what DDR clock
+		// (tcnt/us) -- to compare EV1 vs devboard.
+		bool do_measure = (frames == 120);
+		if (do_measure)
+			perfmon::ddr_start();
+#endif
+
 		auto r0 = read_cntpct();
 		if (!render_scene(fbs[cur])) {
 			gpu.dump_status("scene");
 			panic();
 		}
-		worst_us = std::max<uint32_t>(worst_us, (read_cntpct() - r0) * 1000 / tick_khz);
+		uint32_t render_us = (read_cntpct() - r0) * 1000 / tick_khz;
+		worst_us = std::max<uint32_t>(worst_us, render_us);
+
+#ifdef DDRPERF
+		if (do_measure) {
+			auto s = perfmon::ddr_stop();
+			perfmon::ddr_report("1 frame render", s, uint64_t(RtSize) + FbSize); // clear + resolve writes
+			print("    render wall = ", render_us, " us,");
+			print("DDR bursts/us (tcnt/us) = ", render_us ? s.tcnt / render_us : 0, "\n");
+		}
+#endif
 
 		ltdc_set_framebuffer(fbs[cur].gpu_addr()); // vblank-latched flip
 		cur ^= 1;

@@ -121,8 +121,14 @@ inline Mat4 cube_mvp(float angle, float tilt, float aspect = 1.0f, float px = 0.
 	const Mat4 rx = {1, 0, 0, 0, /**/ 0, cx, sx, 0, /**/ 0, -sx, cx, 0, /**/ 0, 0, 0, 1};
 	const Mat4 tr = {1, 0, 0, 0, /**/ 0, 1, 0, 0, /**/ 0, 0, 1, 0, /**/ px, py, pz, 1};
 	constexpr float f = 2.0f, zn = 1.0f, zf = 10.0f;
-	const Mat4 proj = {f / aspect, 0, 0, 0, /**/ 0, f, 0, 0, /**/ 0, 0, (zf + zn) / (zn - zf), -1, /**/
-					   0,		   0, 2 * zf * zn / (zn - zf), 0};
+	// Fit the FOV to the SMALLER screen dimension so cubes stay a sensible size in
+	// both landscape and portrait. aspect >= 1 is the usual vertical-FOV projection;
+	// aspect < 1 (portrait) fixes the horizontal FOV instead -- otherwise f/aspect
+	// blows the cubes up to ~aspect^-2 the pixels (and fills a tall/narrow screen).
+	const float fx = (aspect >= 1.0f) ? f / aspect : f;
+	const float fy = (aspect >= 1.0f) ? f : f * aspect;
+	const Mat4 proj = {fx, 0, 0, 0, /**/ 0, fy, 0, 0, /**/ 0, 0, (zf + zn) / (zn - zf), -1, /**/
+					   0,  0, 2 * zf * zn / (zn - zf), 0};
 	return mat_mul(proj, mat_mul(tr, mat_mul(rx, ry)));
 }
 
