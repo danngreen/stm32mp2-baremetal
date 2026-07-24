@@ -42,6 +42,7 @@ Currently working examples:
      - USB Hub support
   - ADC running with DMA
   - LTDC display controller (LVDS screen)
+  - LTDC + MIPI DSI interface
   - 3D and 2D GPU rendering pipeline
 
 ![](docs/gpu-ltdc-demo-crop.gif)
@@ -49,7 +50,6 @@ Currently working examples:
 
 TODO:
   - LTDC + RGB parallel interface
-  - LTDC + MIPI DSI interface
   - IPCC and HSEM (A35<=>A35 and A35<=>M33)
   - Loading and running firmware on the M0+ core 
   - SDMMC read/write
