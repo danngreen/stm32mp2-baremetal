@@ -20,7 +20,7 @@ ifeq ($(BOARD),devboard)
   SOURCES += $(SHAREDDIR)/STM32MP2xx_HAL_Driver/Src/stm32mp2xx_hal_dsi.c
   SOURCES += $(SHAREDDIR)/STM32MP2xx_HAL_Driver/Src/stm32mp2xx_hal_ltdc.c
 else
-  DISPLAYDIR := ../ltdc
+  DISPLAYDIR := ../ltdc-lvds
   SOURCES += $(DISPLAYDIR)/lvds.cc
 endif
 SOURCES += $(DISPLAYDIR)/display.cc
