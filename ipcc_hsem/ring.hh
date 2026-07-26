@@ -58,7 +58,8 @@ constexpr uint32_t Ready_A35_1 = 1u << 1;
 constexpr uint32_t Ready_M33 = 1u << 2;
 constexpr uint32_t Ready_All = Ready_A35_0 | Ready_A35_1 | Ready_M33;
 
-inline State &state() {
+inline State &state()
+{
 	return *reinterpret_cast<State *>(SharedAddr);
 }
 
@@ -66,14 +67,16 @@ inline State &state() {
 // writes out and pull the M33's writes in by hand. (The struct is cache-line
 // aligned and sized so `dc ivac` can never discard an unrelated dirty line.)
 // On the M33 these are no-ops -- it runs with no data cache.
-inline void flush() {
+inline void flush()
+{
 #ifdef CORE_CA35
 	clean_dcache_range(&state(), sizeof(State));
 #else
 	__DMB();
 #endif
 }
-inline void refresh() {
+inline void refresh()
+{
 #ifdef CORE_CA35
 	invalidate_dcache_range(&state(), sizeof(State));
 #else
@@ -82,19 +85,10 @@ inline void refresh() {
 }
 
 // --- HSEM --------------------------------------------------------------------
-constexpr uint32_t Sem_State = 0; // guards State
-constexpr uint32_t Sem_Uart = 1;  // guards the shared console UART
-
-using StateSem = mdrivlib::HWSemaphore<Sem_State>;
-using UartSem = mdrivlib::HWSemaphore<Sem_Uart>;
+enum { LockState = 0, LockUart = 1 };
 
 // --- IPCC --------------------------------------------------------------------
-// IPCC1, processor 1 = A35, processor 2 = M33.
-constexpr uint32_t Chan_ToM33 = 1;
-constexpr uint32_t Chan_ToA35 = 2;
-
-using IpccA35 = mdrivlib::IPCC1_<1>;
-using IpccM33 = mdrivlib::IPCC1_<2>;
+enum { CommChannelToM33 = 1, CommChannelToA35 = 2 };
 
 // --- A35 <-> A35 -------------------------------------------------------------
 // SGI used to hand the token from A35 core 0 to A35 core 1.
@@ -115,7 +109,8 @@ constexpr uint32_t ProcId_A35_0 = 1;
 constexpr uint32_t ProcId_A35_1 = 2;
 constexpr uint32_t ProcId_M33 = 3;
 
-inline uint32_t my_procid() {
+inline uint32_t my_procid()
+{
 #ifdef CORE_CA35
 	return (get_mpid() & 0xFF) == 0 ? ProcId_A35_0 : ProcId_A35_1;
 #else
@@ -132,40 +127,51 @@ inline uint32_t my_procid() {
 
 // Spin until this core owns the semaphore. Returns true if it was contended,
 // i.e. someone else held it and we had to wait.
-template<typename Sem>
-inline bool lock_spin() {
+template<unsigned Sem>
+inline bool lock_spin()
+{
 	const uint32_t pid = my_procid();
 	bool contended = false;
-	while (Sem::lock(pid) != mdrivlib::HWSemaphoreFlag::LockedOk)
+	while (HWSemaphore<Sem>::lock(pid) != HWSemaphoreFlag::LockedOk)
 		contended = true;
 	return contended;
 }
 
 // Release must present the same PROCID that took it, or the hardware ignores it.
-template<typename Sem>
-inline void unlock() {
-	Sem::unlock(my_procid());
+template<unsigned Sem>
+inline void unlock()
+{
+	HWSemaphore<Sem>::unlock(my_procid());
 }
 
 // print() the arguments as one uninterruptible unit, so the three cores sharing
 // the console UART don't interleave characters mid-line.
 template<typename... Ts>
-inline void sync_print(Ts... args) {
-	lock_spin<UartSem>();
+inline void sync_print(Ts... args)
+{
+	while (HWSemaphore<LockUart>::lock(my_procid()) != HWSemaphoreFlag::LockedOk)
+		;
+
 	print(args...);
-	unlock<UartSem>();
+
+	HWSemaphore<LockUart>::unlock();
 }
 
 // Announce that this core has its interrupts hooked up and can take the token.
-inline void announce_ready(uint32_t ready_bit) {
-	lock_spin<StateSem>();
+inline void announce_ready(uint32_t ready_bit)
+{
+	while (HWSemaphore<LockState>::lock(my_procid()) != HWSemaphoreFlag::LockedOk)
+		;
+
 	refresh();
 	state().ready |= ready_bit;
 	flush();
-	unlock<StateSem>();
+
+	HWSemaphore<LockState>::unlock();
 }
 
-inline const char *tag_name(uint32_t tag) {
+inline const char *tag_name(uint32_t tag)
+{
 	return tag == Tag_A35_0 ? "A35_0" : tag == Tag_A35_1 ? "A35_1" : tag == Tag_M33 ? "M33" : "?";
 }
 

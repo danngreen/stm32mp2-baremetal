@@ -32,7 +32,7 @@ void delay(unsigned n)
 
 void bump_counter()
 {
-	bool contended = lock_spin<StateSem>();
+	bool contended = lock_spin<LockState>();
 	refresh();
 
 	auto &s = state();
@@ -42,12 +42,12 @@ void bump_counter()
 		s.contended[MyCore]++;
 
 	flush();
-	unlock<StateSem>();
+	unlock<LockState>();
 }
 
 void stamp_token()
 {
-	bool contended = lock_spin<StateSem>();
+	bool contended = lock_spin<LockState>();
 	refresh();
 
 	auto &s = state();
@@ -58,7 +58,7 @@ void stamp_token()
 		s.contended[MyCore]++;
 
 	flush();
-	unlock<StateSem>();
+	unlock<LockState>();
 }
 } // namespace
 
@@ -66,8 +66,8 @@ void stamp_token()
 // and raises a flag; the semaphore work happens in the main loop.
 extern "C" void IPCC1_RX_S_IRQHandler(void)
 {
-	if (IpccM33::is_rx_occupied<Chan_ToM33>()) {
-		IpccM33::clear_flag<Chan_ToM33>(); // ack, or it re-fires forever
+	if (IPCC1_<2>::is_rx_occupied<CommChannelToM33>()) {
+		IPCC1_<2>::clear_flag<CommChannelToM33>(); // ack, or it re-fires forever
 		token_here = true;
 	}
 }
@@ -83,8 +83,8 @@ int main()
 	// Unmask our side of the token channel and let the NVIC deliver it. The
 	// channel was marked secure by the A35, so its interrupt arrives on the
 	// secure line.
-	IpccM33::enable_all_rxocc_isr_secure();
-	IpccM33::enable_chan_rxocc_isr<Chan_ToM33>();
+	IPCC1_<2>::enable_all_rxocc_isr_secure();
+	IPCC1_<2>::enable_chan_rxocc_isr<CommChannelToM33>();
 	NVIC_SetPriority(IPCC1_RX_S_IRQn, 1);
 	NVIC_EnableIRQ(IPCC1_RX_S_IRQn);
 
@@ -96,7 +96,7 @@ int main()
 			stamp_token();
 			// Send the token back to A35 core 0: setting our flag raises the
 			// A35's RX-occupied interrupt on channel 2.
-			IpccM33::set_flag<Chan_ToA35>();
+			IPCC1_<2>::set_flag<CommChannelToA35>();
 		}
 		bump_counter();
 		delay(500); // leave the semaphore free for the (much faster) A35 cores

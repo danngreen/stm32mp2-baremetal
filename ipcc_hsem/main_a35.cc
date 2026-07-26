@@ -66,7 +66,7 @@ void ipcc_init_secure()
 	//   1. the channel security bits set here
 	//   2. unmask secure interrupt: SECRXOIE, not RXOIE
 	//   3. IRQ is on IPCC1_RX_S_IRQn, not IPCC1_RX_IRQn
-	constexpr uint32_t chan_mask = (1u << (Chan_ToM33 - 1)) | (1u << (Chan_ToA35 - 1));
+	constexpr uint32_t chan_mask = (1u << (CommChannelToM33 - 1)) | (1u << (CommChannelToA35 - 1));
 	IPCC1->C1SECCFGR |= chan_mask;
 	IPCC1->C2SECCFGR |= chan_mask;
 	IPCC1->C1PRIVCFGR |= chan_mask;
@@ -88,7 +88,7 @@ void hsem_init()
 	// mark peripheral secure so our secure masters own it
 	RISC->SECCFGR[RifscId_HSEM / 32] |= (1u << (RifscId_HSEM % 32));
 
-	constexpr uint32_t sem_mask = (1u << Sem_State) | (1u << Sem_Uart);
+	constexpr uint32_t sem_mask = (1u << LockState) | (1u << LockUart);
 	HSEM->SECCFGR |= sem_mask;
 	HSEM->PRIVCFGR |= sem_mask;
 }
@@ -116,10 +116,10 @@ uint32_t wait_for_all_cores()
 {
 	uint32_t ready = 0;
 	for (unsigned tries = 0; tries < 2000 && ready != Ready_All; tries++) {
-		lock_spin<StateSem>();
+		lock_spin<LockState>();
 		refresh();
 		ready = state().ready;
-		unlock<StateSem>();
+		unlock<LockState>();
 		if (ready != Ready_All)
 			delay(100'000);
 	}
@@ -130,7 +130,7 @@ uint32_t wait_for_all_cores()
 // Stamp this core into the token's trail.
 void stamp_token(uint32_t tag, uint32_t core_idx)
 {
-	bool contended = lock_spin<StateSem>();
+	bool contended = lock_spin<LockState>();
 	refresh();
 
 	auto &s = state();
@@ -141,7 +141,7 @@ void stamp_token(uint32_t tag, uint32_t core_idx)
 		s.contended[core_idx]++;
 
 	flush();
-	unlock<StateSem>();
+	unlock<LockState>();
 }
 
 // Grab the lock just to bump a counter. This is the contention generator: all
@@ -149,7 +149,7 @@ void stamp_token(uint32_t tag, uint32_t core_idx)
 // collide with other cores.
 void bump_counter(uint32_t core_idx)
 {
-	bool contended = lock_spin<StateSem>();
+	bool contended = lock_spin<LockState>();
 	refresh();
 
 	auto &s = state();
@@ -159,12 +159,12 @@ void bump_counter(uint32_t core_idx)
 		s.contended[core_idx]++;
 
 	flush();
-	unlock<StateSem>();
+	unlock<LockState>();
 }
 
 void start_lap()
 {
-	bool contended = lock_spin<StateSem>();
+	bool contended = lock_spin<LockState>();
 	refresh();
 
 	auto &s = state();
@@ -176,7 +176,7 @@ void start_lap()
 		s.contended[0]++;
 
 	flush();
-	unlock<StateSem>();
+	unlock<LockState>();
 
 	// Hand off to A35 core 1. HSEM and IPCC both see the two A35 cores as one
 	// "core", so an SGI is the only way to address core 1 specifically.
@@ -189,7 +189,7 @@ void finish_lap()
 	// semaphore while waiting for the UART one would invert the lock order.
 	State snap;
 	{
-		bool contended = lock_spin<StateSem>();
+		bool contended = lock_spin<LockState>();
 		refresh();
 
 		auto &s = state();
@@ -199,7 +199,7 @@ void finish_lap()
 		snap = s;
 
 		flush();
-		unlock<StateSem>();
+		unlock<LockState>();
 	}
 
 	uint32_t sum = 0;
@@ -209,7 +209,7 @@ void finish_lap()
 	// The line is built from several print() calls, so hold the UART semaphore
 	// across all of them -- one sync_print() per piece would let another core
 	// slip its own output into the middle of the line.
-	lock_spin<UartSem>();
+	lock_spin<LockUart>();
 	print("lap ", (int)snap.lap, ": ");
 	for (uint32_t i = 0; i < TrailLen; i++)
 		print(tag_name(snap.trail[i]), i + 1 < TrailLen ? " -> " : "");
@@ -225,7 +225,7 @@ void finish_lap()
 		  ", contended ",
 		  (int)(snap.contended[0] + snap.contended[1] + snap.contended[2]),
 		  "\n");
-	unlock<UartSem>();
+	unlock<LockUart>();
 }
 } // namespace
 
@@ -248,10 +248,10 @@ int main()
 	// Register before starting the other cores so no hand-off can be missed.
 	// The ISR only acks the mailbox and raises a flag -- see ring.hh.
 	IPCC1_<1>::enable_all_rxocc_isr_secure(); // our channels are secure -> secure line
-	IPCC1_<1>::enable_chan_rxocc_isr<Chan_ToA35>();
+	IPCC1_<1>::enable_chan_rxocc_isr<CommChannelToA35>();
 	InterruptManager::register_and_start_isr(IPCC1_RX_S_IRQn, 1, 0, [] {
-		if (IPCC1_<1>::is_rx_occupied<Chan_ToA35>()) {
-			IPCC1_<1>::clear_flag<Chan_ToA35>(); // ack, or it re-fires forever
+		if (IPCC1_<1>::is_rx_occupied<CommChannelToA35>()) {
+			IPCC1_<1>::clear_flag<CommChannelToA35>(); // ack, or it re-fires forever
 			token_returned = true;
 		}
 	});
@@ -306,7 +306,7 @@ extern "C" void aux_main()
 			// Hand off to the M33. Setting our flag raises the M33's
 			// RX-occupied interrupt on this channel.
 
-			IPCC1_<1>::set_flag<Chan_ToM33>();
+			IPCC1_<1>::set_flag<CommChannelToM33>();
 		}
 		bump_counter(1);
 		delay(BackoffNops); // see the note in main()
