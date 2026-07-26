@@ -18,8 +18,6 @@
 // and clears the other core's flag" is the whole model -- the SCR register is
 // write-only with separate set and clear halves, so no read-modify-write races.
 
-namespace mdrivlib
-{
 namespace IPCCRegs
 {
 
@@ -125,5 +123,3 @@ struct Core<2, Base> {
 };
 
 }; // namespace IPCCRegs
-
-} // namespace mdrivlib

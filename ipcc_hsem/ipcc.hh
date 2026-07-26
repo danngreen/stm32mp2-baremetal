@@ -15,8 +15,6 @@
 //   "RX occupied" therefore fires on the *other* core's flag going high, and
 //   "TX free" fires on *this* core's flag going low.
 
-namespace mdrivlib
-{
 template<size_t N, uint32_t Base>
 struct IPCC_ {
 	static_assert(N == 1 || N == 2, "IPCC has Core = 1 and Core = 2 only");
@@ -134,5 +132,3 @@ template<size_t N>
 using IPCC1_ = IPCC_<N, IPCC1_BASE>;
 template<size_t N>
 using IPCC2_ = IPCC_<N, IPCC2_BASE>;
-
-} // namespace mdrivlib

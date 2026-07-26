@@ -14,9 +14,6 @@
 //   - The read-back check must ignore CFEN (bit 30), which the hardware sets to
 //     report CID filtering -- it is never part of what we wrote.
 
-namespace mdrivlib
-{
-
 enum class HWSemaphoreFlag {
 	LockFailed = 0,
 	LockedOk = 1,
@@ -126,5 +123,3 @@ struct HWSemaphore {
 		return misr() & (1u << SemaphoreID);
 	}
 };
-
-} // namespace mdrivlib
