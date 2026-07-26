@@ -8,6 +8,7 @@
 // this one's .rodata and copied into SRAM2 at boot.
 
 #include "aarch64/system_reg.hh"
+#include "drivers/copro_m33.hh"
 #include "drivers/rcc.hh"
 #include "interrupt/interrupt.hh"
 #include "print/print.hh"
@@ -49,50 +50,51 @@ constexpr unsigned BackoffNops = 2000;		  // between lock attempts in the idle l
 volatile bool token_returned = false; // core 0: M33 handed the token back
 volatile bool token_at_core1 = false; // core 1: core 0 handed us the token
 
-// --- one-time peripheral setup (core 0 only) --------------------------------
-void periph_init()
+void ipcc_init_secure()
 {
-	RCC_Enable::HSEM_::set();
 	RCC_Enable::IPCC1_::set();
-
-	// Pulse both peripherals through reset. Re-flashing without a power cycle
-	// can otherwise leave a semaphore still locked by the previous run's cores,
-	// and lock_spin() would wait for an owner that no longer exists. (The M33 is
-	// parked just below, and A35 core 1 is reset when it is started, so nothing
-	// is using these yet.)
-	RCC_Reset::HSEM_::set();
 	RCC_Reset::IPCC1_::set();
-	RCC_Reset::HSEM_::clear();
 	RCC_Reset::IPCC1_::clear();
 
-	// RIFSC: mark both peripherals secure so our secure masters own them.
+	// mark secure so our secure masters own it
 	RISC->SECCFGR[RifscId_IPCC1 / 32] |= (1u << (RifscId_IPCC1 % 32));
-	RISC->SECCFGR[RifscId_HSEM / 32] |= (1u << (RifscId_HSEM % 32));
 
 	// The whole system is secure, so mark the resources we use secure too, and
-	// then use the *secure* interrupt lines. A channel's security decides which
+	// use the secure interrupt lines. A channel's security decides which
 	// of the two IRQ lines its interrupt comes out on, so three things have to
-	// agree -- and if IPCC interrupts ever stop arriving, they are what to check:
-	//   1. the channel security bits set here,
-	//   2. enable_all_rxocc_isr_secure() (SECRXOIE, not RXOIE),
-	//   3. the IPCC1_RX_S_IRQn vector (not IPCC1_RX_IRQn).
-	// Flipping all three to their non-secure counterparts is equally valid.
+	// agree:
+	//   1. the channel security bits set here
+	//   2. unmask secure interrupt: SECRXOIE, not RXOIE
+	//   3. IRQ is on IPCC1_RX_S_IRQn, not IPCC1_RX_IRQn
 	constexpr uint32_t chan_mask = (1u << (Chan_ToM33 - 1)) | (1u << (Chan_ToA35 - 1));
 	IPCC1->C1SECCFGR |= chan_mask;
 	IPCC1->C2SECCFGR |= chan_mask;
 	IPCC1->C1PRIVCFGR |= chan_mask;
 	IPCC1->C2PRIVCFGR |= chan_mask;
 
-	// Same for the two semaphores: secure + privileged, matching the SEC|PRIV
-	// bits both cores put in the lock word.
-	constexpr uint32_t sem_mask = (1u << Sem_State) | (1u << Sem_Uart);
-	HSEM->SECCFGR |= sem_mask;
-	HSEM->PRIVCFGR |= sem_mask;
-
 	// Start from a known state: no stale flags from a previous run.
 	IPCC1->C1SCR = 0xFFFFu; // clear all of processor 1's "message waiting" flags
 	IPCC1->C2SCR = 0xFFFFu;
+}
 
+void hsem_init()
+{
+	RCC_Enable::HSEM_::set();
+
+	// Reset to clear all locks
+	RCC_Reset::HSEM_::set();
+	RCC_Reset::HSEM_::clear();
+
+	// mark peripheral secure so our secure masters own it
+	RISC->SECCFGR[RifscId_HSEM / 32] |= (1u << (RifscId_HSEM % 32));
+
+	constexpr uint32_t sem_mask = (1u << Sem_State) | (1u << Sem_Uart);
+	HSEM->SECCFGR |= sem_mask;
+	HSEM->PRIVCFGR |= sem_mask;
+}
+
+void lap_test_init()
+{
 	auto &s = state();
 	s.lap = 0;
 	s.hop = 0;
@@ -122,50 +124,6 @@ uint32_t wait_for_all_cores()
 			delay(100'000);
 	}
 	return ready;
-}
-
-// --- M33 bring-up (same recipe as copro_m33_embedded) -----------------------
-// The M33 runs secure, so its instruction fetches must land on secure RISAB
-// pages. block_ram_enable_el3() opened SRAM2 up at boot, so put its pages back
-// to secure before releasing the core.
-void sram2_set_secure()
-{
-	for (auto i = 0u; i < 32; i++)
-		RISAB4->PGSECCFGR[i] = 0xFF; // all 8 blocks of each page secure
-}
-
-// Assert hold-boot (BOOT_CPU2=0) and the M33 reset. Mirrors OP-TEE
-// rproc_stop(). Called before anything else so that a warm restart cannot have
-// the previous run's M33 still executing while we reconfigure underneath it.
-void park_m33()
-{
-	RCC->CPUBOOTCR &= ~RCC_CPUBOOTCR_BOOT_CPU2;
-	RCC->C2RSTCSETR = RCC_C2RSTCSETR_C2RST;
-}
-
-void start_m33()
-{
-	park_m33(); // idempotent: guarantees a known-clean state before loading
-
-	auto *dst = reinterpret_cast<volatile uint8_t *>(M33_LOAD_ADDR);
-	for (unsigned i = 0; i < m33_firmware_len; i++)
-		dst[i] = m33_firmware[i];
-	for (uintptr_t a = M33_LOAD_ADDR; a < M33_LOAD_ADDR + m33_firmware_len; a += 64)
-		clean_dcache_address(a);
-	dsb_sy();
-	isb();
-
-	sram2_set_secure();
-
-	// Run the M33 secure and point its secure vector table at the loaded image.
-	CA35SYSCFG->M33_TZEN_CR |= CA35SYSCFG_M33_TZEN_CR_CFG_SECEXT;
-	CA35SYSCFG->M33_INITSVTOR_CR = (uint32_t)M33_LOAD_ADDR & CA35SYSCFG_M33_INITSVTOR_CR_INITSVTOR_Msk;
-	dsb_sy();
-	isb();
-
-	// Release hold-boot -> the M33 boots from INITSVTOR (the hardware releases
-	// the M33 reset automatically).
-	RCC->CPUBOOTCR |= RCC_CPUBOOTCR_BOOT_CPU2;
 }
 
 // --- ring ------------------------------------------------------------------
@@ -277,22 +235,28 @@ int main()
 	print("=====================================================\n\n");
 
 	park_m33(); // before periph_init resets the mailbox peripherals
-	periph_init();
+
+	ipcc_init_secure();
+
+	hsem_init();
+
+	lap_test_init();
+
 	// From here on other cores may be printing too, so take the UART semaphore.
 	sync_print("A35_0: HSEM + IPCC1 clocked, secured, flags cleared\n");
 
 	// Register before starting the other cores so no hand-off can be missed.
 	// The ISR only acks the mailbox and raises a flag -- see ring.hh.
-	IpccA35::enable_all_rxocc_isr_secure(); // our channels are secure -> secure line
-	IpccA35::enable_chan_rxocc_isr<Chan_ToA35>();
+	IPCC1_<1>::enable_all_rxocc_isr_secure(); // our channels are secure -> secure line
+	IPCC1_<1>::enable_chan_rxocc_isr<Chan_ToA35>();
 	InterruptManager::register_and_start_isr(IPCC1_RX_S_IRQn, 1, 0, [] {
-		if (IpccA35::is_rx_occupied<Chan_ToA35>()) {
-			IpccA35::clear_flag<Chan_ToA35>(); // ack, or it re-fires forever
+		if (IPCC1_<1>::is_rx_occupied<Chan_ToA35>()) {
+			IPCC1_<1>::clear_flag<Chan_ToA35>(); // ack, or it re-fires forever
 			token_returned = true;
 		}
 	});
 
-	start_m33();
+	start_m33(std::span<const uint8_t>{m33_firmware, m33_firmware_len}, M33_LOAD_ADDR);
 	sync_print("A35_0: M33 released from hold-boot (", (int)m33_firmware_len, " bytes in SRAM2)\n");
 
 	auto ret = start_cpu1(aux_core_startup, 0);
@@ -303,7 +267,10 @@ int main()
 	if (ready == Ready_All)
 		sync_print("A35_0: all three cores ready -- starting the ring\n\n");
 	else
-		sync_print("A35_0: WARNING: only cores ", Hex{ready}, " of ", Hex{Ready_All},
+		sync_print("A35_0: WARNING: only cores ",
+				   Hex{ready},
+				   " of ",
+				   Hex{Ready_All},
 				   " reported ready -- starting anyway\n\n");
 
 	start_lap();
@@ -338,7 +305,8 @@ extern "C" void aux_main()
 			stamp_token(Tag_A35_1, 1);
 			// Hand off to the M33. Setting our flag raises the M33's
 			// RX-occupied interrupt on this channel.
-			IpccA35::set_flag<Chan_ToM33>();
+
+			IPCC1_<1>::set_flag<Chan_ToM33>();
 		}
 		bump_counter(1);
 		delay(BackoffNops); // see the note in main()
