@@ -36,4 +36,7 @@ clean:
 flash-t32:
 	python3 flash_t32.py
 
+flash-stlink:
+	../scripts/flash-stlink.sh build/corea35/main.elf
+
 .PHONY: all m33 install clean
