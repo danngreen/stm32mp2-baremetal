@@ -97,8 +97,10 @@ Infinite_Loop:
 	b Infinite_Loop
 	.size Default_Handler, .-Default_Handler
 
-	.section .isr_vector,"a",%progbits
+.section .isr_vector,"a",%progbits
 	.type g_pfnVectors, %object
+	.size g_pfnVectors, .-g_pfnVectors
+
 g_pfnVectors:
 	.word  _estack             /* Top of stack           */
 	.word  Reset_Handler       /* Reset                  */
@@ -117,13 +119,6 @@ g_pfnVectors:
 	.word  PendSV_Handler      /* PendSV                 */
 	.word  SysTick_Handler     /* SysTick                */
 
-	/* External interrupts 0..172 are unused by this demo. */
-	.rept  173
-	.word  Default_Handler
-	.endr
-	.word  IPCC1_RX_S_IRQHandler   /* IRQ 173: IPCC1 RX occupied, secure */
-
-	.size  g_pfnVectors, .-g_pfnVectors
 
 	.macro weak_handler name
 	.weak      \name
@@ -521,4 +516,3 @@ g_pfnVectors:
   .word IRQ_Trampoline_373
   .word IRQ_Trampoline_374
   .word IRQ_Trampoline_375
-

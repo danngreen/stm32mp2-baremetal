@@ -12,6 +12,7 @@
 // No data cache here, so the shared state needs no maintenance on this side --
 // Ring::flush()/refresh() reduce to a barrier (see ring.hh).
 
+#include "interrupt_m33/interrupt.hh"
 #include "ring.hh"
 #include "stm32mp2xx.h"
 #include <cstdint>
@@ -62,16 +63,6 @@ void stamp_token()
 }
 } // namespace
 
-// IPCC1 secure RX-occupied vector (see startup_m33.s). Only acks the mailbox
-// and raises a flag; the semaphore work happens in the main loop.
-extern "C" void IPCC1_RX_S_IRQHandler(void)
-{
-	if (IPCC1_<2>::is_rx_occupied<CommChannelToM33>()) {
-		IPCC1_<2>::clear_flag<CommChannelToM33>(); // ack, or it re-fires forever
-		token_here = true;
-	}
-}
-
 int main()
 {
 	// Deliberately no init_uart() here: the A35 brought the console up in its
@@ -85,8 +76,15 @@ int main()
 	// secure line.
 	IPCC1_<2>::enable_all_rxocc_isr_secure();
 	IPCC1_<2>::enable_chan_rxocc_isr<CommChannelToM33>();
-	NVIC_SetPriority(IPCC1_RX_S_IRQn, 1);
-	NVIC_EnableIRQ(IPCC1_RX_S_IRQn);
+
+	// Note: The IRQ should be 173 in M33's numbering
+	static_assert(IPCC1_RX_S_IRQn == 173);
+	InterruptManager::register_and_start_isr(IPCC1_RX_S_IRQn, 1, 0, [] {
+		if (IPCC1_<2>::is_rx_occupied<CommChannelToM33>()) {
+			IPCC1_<2>::clear_flag<CommChannelToM33>(); // ack, or it re-fires forever
+			token_here = true;
+		}
+	});
 
 	announce_ready(Ready_M33);
 
