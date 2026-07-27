@@ -21,47 +21,6 @@ takes about 5 seconds.
 - SD card that boots TF-A BL2 with `debug_load` spinning. This parks core 0 at
   EL3 with MMU/caches off and prints `Ready` on the UART. 
 
-## Options
-
-- `--no-reset`: skip the reset (board must already be parked at `Ready`).
-  Don't use after an app has run.
-- `--smp`: resumes core 1 (back into its holding pen) just before starting
-  the app. Default (no flag) keeps core 1 halted so it cannot wake and race
-  single-core apps.
-
-  Multicore apps normally do NOT need this flag: `multicore_smp/psci.cc`
-  (`unhalt_cpu1`) shows the robust app-side pattern — before releasing core 1
-  via `CA35SYSCFG->VBAR_CR` + core reset, check `EDPRSR.HALTED` and restart a
-  debug-halted core 1 through its CTI. The CoreSight debug components are
-  software-visible on the system bus (CPU1 external debug at `0x4A310000`,
-  its CTI at `0x4A320000`; same registers the debugger reaches via AP0 at
-  `0x8031xxxx`/`0x8032xxxx`). A core-1 release that skips this hangs in
-  `start_cpu1` whenever a debugger or bootloader left core 1 halted, since
-  the RCC core-reset request never completes for a debug-halted core. Use
-  `--smp` only for multicore apps that lack this pattern.
-
-Debugging tip: with SMP grouping off, per-target `reg pc` on `a35_1` can
-misreport the current core's cached registers. To see where a core is
-*really* executing (without halting it), read its `EDPCSR` PC-sample
-register: `stm32mp25x.axi read_memory 0x4A3100A0 32 1` (core 1) or
-`0x4A2100A0` (core 0).
-- `--uart-log[=PATH]`: sanity-check that debug_load's `Ready` banner appeared
-  in a UART log file (default `~/minicom-devboard.log`) after reset. Purely
-  optional: boot progress is detected without any UART, by writing a marker
-  word to 0x88000000 and waiting for BL2 to overwrite it when it reloads the
-  image from SD.
-
-## How the reset works
-
-The script prefers a **software system reset**: writing
-`RCC_GRSTCSETR.SYSRST` (0x44200400) *through the halted A35 core 0*. The RCC
-only honors this write from a secure master — writes via the AXI mem-AP are
-silently ignored — and the halted core at EL3 is one. This works on any
-adapter, including the EV1's embedded ST-LINK, whose NRST line does not reach
-the MPU (adapter `reset run` silently fails to reboot the EV1). If the sysrst
-doesn't take (e.g. the core is wedged in a state where it can't perform the
-write), the script falls back to adapter srst via `reset run`.
-
 
 ## Why the naive gdb flow does not work
 

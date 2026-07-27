@@ -94,6 +94,37 @@ if ! oocd "version" 2>/dev/null | grep -q "Open On-Chip"; then
 fi
 
 # --- Reset board to the parked "Ready" state ---
+#
+# Boot detection is done with a marker word: BL2 reloads the image from SD to
+# 0x88000000 on a real boot, so a marker written there beforehand disappears
+# exactly when the boot has happened. This works with no UART access.
+#
+# Two reset methods:
+#  - "sysrst": write RCC_GRSTCSETR.SYSRST through the halted A35 (the RCC only
+#    honors it from a secure master; writes via the AXI AP are silently
+#    ignored). Works on any adapter, including the EV1's embedded ST-LINK,
+#    whose NRST line does not reach the MPU.
+#  - "srst": OpenOCD `reset run` (adapter NRST pin). Fallback if sysrst fails.
+MARKER=0xdeadbeef
+RCC_GRSTCSETR=0x44200400
+
+read_image_word() {
+	oocd "stm32mp25x.axi arp_examine; targets stm32mp25x.axi; read_memory 0x88000000 32 1" 2>/dev/null | tail -1
+}
+
+wait_for_boot() { # $1 = seconds to wait; returns 0 once the marker is gone
+	for _ in $(seq 1 "$1"); do
+		sleep 1
+		W=$(read_image_word)
+		case "$W" in
+		"") ;;                      # AXI not readable yet (mid-reset)
+		"$MARKER") ;;               # not rebooted yet
+		0x*) return 0 ;;            # BL2 wrote the image back: booted
+		esac
+	done
+	return 1
+}
+
 if [ "$DO_RESET" = 1 ]; then
 	LOGSZ=$(wc -c < "$UART_LOG" 2>/dev/null || echo 0)
 	echo "Resetting board..."
