@@ -46,13 +46,16 @@ $(UART_STAMP):
 	@rm -f $(BUILDDIR)/uart_choice_is_*
 	@touch $@
 
-INCLUDES = -I. -I$(SHAREDDIR)
+INCLUDES = -I.
+INCLUDES += -I$(SHAREDDIR)
 INCLUDES += -I$(SHAREDDIR)/STM32MP2xx_HAL_Driver/Inc
 INCLUDES += -I$(SHAREDDIR)/cmsis-device/Include
 INCLUDES += -I$(SHAREDDIR)/cmsis/Include
 
-SOURCES  = startup_m33.s
+SOURCES = startup_m33.s
 SOURCES += main_m33.cc
+SOURCES += $(SHAREDDIR)/newlib/syscall_stubs.c
+SOURCES += $(SHAREDDIR)/interrupt_m33/interrupt_handler_m33.cc
 SOURCES += $(SHAREDDIR)/print/print.cc
 SOURCES += $(SHAREDDIR)/print/uart_print.c
 
