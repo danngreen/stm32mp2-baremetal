@@ -36,8 +36,17 @@ public:
 
 	static inline void callISR(uint32_t irqnum)
 	{
+		// A default-constructed Callback would jump to address 0: park here
+		// instead and leave the culprit IRQ number readable by a debugger.
+		if (!ISRs[irqnum]) {
+			last_unhandled_irq = irqnum;
+			while (true)
+				asm volatile("wfe");
+		}
 		ISRs[irqnum]();
 	}
+
+	static inline volatile uint32_t last_unhandled_irq = 0xFFFFFFFF;
 
 private:
 	static inline std::array<ISRType, NumISRs> ISRs;

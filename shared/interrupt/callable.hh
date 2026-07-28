@@ -37,6 +37,10 @@ public:
 		return;
 	}
 
+	explicit operator bool() const {
+		return m_callback != nullptr;
+	}
+
 	void operator()() {
 		call();
 	}
