@@ -43,7 +43,6 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STUB_SRC="$REPO_ROOT/scripts/stlink/sanitize_stub.S"
 STUB_BIN="$REPO_ROOT/scripts/stlink/sanitize_stub.bin"
 STUB_ADDR=0x9FF00000
-UART_LOG="$HOME/minicom-devboard.log"
 OOCD_LOG="${TMPDIR:-/tmp}/openocd-stlink.log"
 TCL_PORT=6666
 
@@ -126,16 +125,40 @@ wait_for_boot() { # $1 = seconds to wait; returns 0 once the marker is gone
 }
 
 if [ "$DO_RESET" = 1 ]; then
-	LOGSZ=$(wc -c < "$UART_LOG" 2>/dev/null || echo 0)
 	echo "Resetting board..."
-	oocd "reset run" > /dev/null
-	READY=0
-	for i in $(seq 1 20); do
-		sleep 1
-		if tail -c +$((LOGSZ + 1)) "$UART_LOG" 2>/dev/null | grep -q "Ready"; then READY=1; break; fi
-	done
-	[ "$READY" = 1 ] || die "Board did not print 'Ready' after reset (check SD card / UART log)"
-	echo "Board parked at 'Ready' (${i}s)"
+	oocd "targets stm32mp25x.a35_0" > /dev/null
+	oocd "stm32mp25x.a35_0 arp_examine" > /dev/null
+	oocd "halt" > /dev/null
+	sleep 0.2
+	oocd "stm32mp25x.axi mww 0x88000000 $MARKER" > /dev/null
+	# Method 1: software system reset via the secure core
+	oocd "stm32mp25x.a35_0 mww $RCC_GRSTCSETR 1" > /dev/null 2>&1 || true
+	if ! wait_for_boot 5; then
+		# Method 2: adapter srst
+		echo "sysrst did not reboot the board, trying adapter srst..."
+		oocd "reset run" > /dev/null
+		if ! wait_for_boot 10; then
+			# srst can wedge the ST-LINK DAP session even when the board did
+			# reset fine underneath -- reconnect and look again before giving up.
+			echo "DAP unresponsive after srst, restarting OpenOCD..."
+			pkill -f "openocd" 2>/dev/null || true
+			sleep 1
+			(cd "$REPO_ROOT" && nohup openocd > "$OOCD_LOG" 2>&1 &)
+			for i in $(seq 1 20); do
+				sleep 0.5
+				if oocd "version" 2>/dev/null | grep -q "Open On-Chip"; then break; fi
+				[ "$i" = 20 ] && die "OpenOCD did not restart (see $OOCD_LOG)"
+			done
+			wait_for_boot 5 || die "Board did not reboot (no method worked; check SD card)"
+		fi
+	fi
+	sleep 1  # let debug_load reach its parked loop
+	oocd "targets stm32mp25x.a35_0" > /dev/null
+	if [ -n "$UART_LOG" ]; then
+		grep -q "Ready" <(tail -c 2000 "$UART_LOG" 2>/dev/null) \
+			|| echo "warning: no 'Ready' in tail of $UART_LOG"
+	fi
+	echo "Board rebooted and parked."
 fi
 
 # --- Recover targets, single-core mode, both cores halted ---
@@ -167,4 +190,4 @@ if [ "$DO_SMP" = 1 ]; then
 	oocd "targets stm32mp25x.a35_1; resume; targets stm32mp25x.a35_0" > /dev/null
 fi
 oocd "resume $STUB_ADDR" > /dev/null
-echo "Running. UART output: tail -f $UART_LOG"
+echo "Running."

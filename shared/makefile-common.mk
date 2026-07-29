@@ -247,9 +247,6 @@ flash-t32:
 flash-stlink:
 	$(SCRIPTDIR)/flash-stlink.sh $(ELF)
 
-flash-stlink:
-	../scripts/flash-stlink.sh $(ELF)
-
 %.d: ;
 
 clean:
