@@ -44,13 +44,14 @@ Currently working examples:
   - LTDC display controller (LVDS screen)
   - LTDC + MIPI DSI interface
   - 3D and 2D GPU rendering pipeline
+  - HSEM hardware semaphore
 
 ![](docs/gpu-ltdc-demo-crop.gif)
 
 
 TODO:
-  - LTDC + RGB parallel interface
-  - IPCC and HSEM (A35<=>A35 and A35<=>M33)
+  - RGB parallel interface
+  - IPCC (A35<=>A35 and A35<=>M33)
   - Loading and running firmware on the M0+ core 
   - SDMMC read/write
   - XSPI read/write (requires custom board with a flash chip)
@@ -312,11 +313,6 @@ it's not a good workflow if you're making lots of changes. A faster workflow
 is to load over SWD or JTAG with a debugger. This has the added benefit of
 letting you use a debugger to debug your program.
 
-There are two main ways of doing this: 
-- using the EV1 board's built-in ST-LINK with just a USB cable
-- or using the EV1 board's 10-pin SWD header (CN22 MIPI-10) with an external
-  debugger such as the J-Link or TRACE32.
- 
 First, you will need to load the `debug_load` project onto the SD card. Make sure
 it boots up and says "Ready" and then hangs.
 
@@ -325,16 +321,26 @@ You can just leave the SD card installed in the EV1, and reboot with the Reset b
 Loading a new project just means waiting until it boots (1-2 seconds)
 and then loading the binary or elf file with your debugging software.
 
-## Loading an app via SWD via the USB jack (ST-LINK)
+There are two ways to connect a debugger to the EV1 board:
+- Connecting a USB cable to the EV1's ST-LINK via the USB jack
+- Connecting a 10-pin SWD cable to the EV1's SWD header (CN22 MIPI-10) and
+  using an external debugger such as the J-Link or TRACE32.
 
-The Discovery and Eval boards have an SWD connection via the USB jack marked
-"ST-LINK". This USB connection provides both a ST-LINK debugger interface, as
-well as a console UART.
+The first way (direct USB cable to the EV1) connects to an on-board ST-LINK 
+circuit on the EV1. If you have a custom board, you can use an external ST-LINK-V3
+debugger and follow the same steps.
 
-1. Connect your computer to this USB jack. Power on with the SD card installed,
-   and open a console terminal on your computer as described above in "Running the program".
+## Debugging with the EV1's ST-LINK via the USB jack (or with an external ST-LINK-V3)
 
-2. Start openocd. The scripts for the stm32mp2 chips are included in this repo,
+1. Connect your computer to the ST-LINK USB jack on the EV1. If you're using an
+   external ST-LINK-V3 with a custom board, then connect it to the 10-pin SWD
+   MIPI-10 header (CN22) and make sure to connect a UART (see discussion on
+   console selection).
+
+2. Power on with the SD card installed, and open a console terminal on your
+   computer as described above in "Running the program".
+
+3. Start openocd. The scripts for the stm32mp2 chips are included in this repo,
    as well as the openocd config file (`openocd.cfg`). So start openocd in a
    new terminal window like this:
 
@@ -413,31 +419,37 @@ continue
 
 ### Resetting
 
-If you re-compile and need to load the new binary, unfortunately the best way
-I've found is to press the hard reset button on the EV1 board. Usually openocd
-will re-connect, but if it doesn't then you have to unplug/plug the USB cable
-so it can re-enumerate the ST-LINK USB device. After doing this, you need to
-quit gdb and re-start it. This process could use improvement (especially
-losing the gdb history), so if anyone has a better way, please let me know
-(open an issue, PR, or comment). I've tried various commands like `monitor
-halt` and `monitor reset` but they inevitably make it harder to connect.
+If you re-compile and need to load the new binary, gdb and openocd get confused
+with the multiple cores and caches, and with memory access via AXI bus vs.
+through a processor core, and it usually doesn't work to do a simple `monitor
+reset` like can be done on more simple MCUs. Caches need to be invalidated and
+disabled and cores need to be parked, which is more easily done in assembly
+than with openocd commands. 
 
+There's a helper script in `scripts/stlink/` which you can invoke with:
 
-## Debugging via SWD with the MIPI-10 header (J-Link or TRACE32)
+```bash
+make flash-stlink
+```
 
-If you prefer to use an external debugger like the J-Link or the TRACE32, you can 
-connect via the MIPI-10 header CN22.
-The header has the NRST pin, but no JTRST pin, so JTAG is not reliable (YMMV).
-I found SWD to be a better connection because of this.
-I've had excellent results with the TRACE32 debugger, and mixed results with
-the J-Link.
+This will reset the device and flash the current project. 
+
+## Debugging via the MIPI-10 header (J-Link or TRACE32)
+
+If you prefer to use an external debugger like the J-Link or the TRACE32, you
+can connect via the MIPI-10 header CN22.
+
+The header has the NRST pin, but no JTRST pin, so JTAG is not reliable. I found
+SWD to be a better connection because of this. I've had excellent results with
+the ST-LINK-V3 and TRACE32 debuggers, and mixed results with the J-Link.
 
 ### UART connection
 
-I found that the SWD header is only usable if you install jumper JP3, which 
-puts the ST-LINK controller IC into reset. Therefore I cannot use USART2
-while using the MIPI-10 JTAG/SWD header, so USART6 is the only way I am able to get
-a UART console.
+I found that the SWD header is only usable if you install jumper JP3, which
+puts the ST-LINK controller IC into reset. Therefore I cannot use USART2 while
+using the MIPI-10 JTAG/SWD header, so USART6 is the only way I am able to get a
+UART console.
+
 However, one user on the ST forums described that they are able to use the SWD header
 without disabling the ST-LINK controller IC: https://community.st.com/stm32-mpus-products-and-hardware-related-39/connect-a-debugger-to-stm32mp257f-ev1-board-137825
 
@@ -469,7 +481,19 @@ or something like this, as it seems to work fine once the MMU is set up.
 #### TRACE32
 
 The TRACE32 debugger will connect to the EV1 board reliably. I've included a
-t32 cmm file in scripts to help.
+t32 cmm file in scripts to help in `scripts/t32-mp257.cmm`. 
+You can also reset and flash with 
+
+```bash
+make flash-t32
+```
+
+which requires TRACE32 to be running with the python rcl started (see TRACE32 docs),
+and the TRACE32 python module to be installed. This script just runs
+
+```bash
+python3 scripts/flash_t32.py
+```
 
 
 # Exception Level 3 (EL3) and Secure state
