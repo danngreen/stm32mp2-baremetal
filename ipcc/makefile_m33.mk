@@ -60,7 +60,7 @@ SOURCES += $(SHAREDDIR)/print/print.cc
 SOURCES += $(SHAREDDIR)/print/uart_print.c
 
 # -MMD -MP: regenerate objects when a header they include changes (the shared
-# ring.hh / hsem.hh / ipcc.hh are edited far more often than the .cc files).
+# work.hh / ipcc.hh are edited far more often than the .cc files).
 CFLAGS = -g2 -fno-common $(MCU) $(DEFS) $(INCLUDES) -MMD -MP \
 	-fdata-sections -ffunction-sections -ffreestanding -nostdlib -nostartfiles
 

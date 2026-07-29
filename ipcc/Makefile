@@ -1,7 +1,7 @@
-# ipcc_hsem - top-level Makefile
+# ipcc - top-level Makefile
 #
 # Builds the Cortex-M33 firmware, embeds it into a C header, then builds the
-# Cortex-A35 firmware which loads and starts the M33 (and A35 core 1).
+# Cortex-A35 firmware which loads and starts the M33.
 # Same two-stage arrangement as copro_m33_embedded.
 
 export BINARYNAME = main
@@ -34,7 +34,7 @@ clean:
 	rm -f firmware_m33.h
 
 flash-t32:
-	python3 flash_t32.py
+	python3 ../scripts/flash_t32.py build/corea35/main.elf
 
 flash-stlink:
 	../scripts/flash-stlink.sh build/corea35/main.elf

@@ -111,8 +111,6 @@ SECTIONS
     _stack_end = _stack_start + 0x1000; /* 64 KB */
 
     /* A35 core 1 runs the same image and needs its own stack (aux_core_startup.s) */
-    _cpu1_stack_start = _stack_end;
-    _cpu1_stack_end = _cpu1_stack_start + 0x1000; /* 64 KB */
 
     _irq_stack_size = _irq_stack_end - _irq_stack_start;
     _fiq_stack_size = _fiq_stack_end - _fiq_stack_start;
