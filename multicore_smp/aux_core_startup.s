@@ -75,7 +75,11 @@ el3_entry_aux:
     b       entry_done_aux
 
 entry_done_aux:
-    bl      __libc_init_array
+    // No __libc_init_array here: core 0 already ran the global constructors
+    // (before releasing this core), and all statics live in shared memory.
+    // Re-running them on core 1 re-constructs shared objects in place -- e.g.
+    // it wipes the InterruptManager ISR table, discarding every handler core 0
+    // had registered.
     msr     daifclr, #0xf
     bl      IRQ_Initialize
     bl      aux_main
