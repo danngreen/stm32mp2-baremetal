@@ -1,7 +1,7 @@
 #include "drivers/watchdog.hh"
 #include "interrupt/interrupt.hh"
 #include "print/print.hh"
-#include "psci.hh"
+#include "drivers/psci.hh"
 
 void delay(unsigned x)
 {
