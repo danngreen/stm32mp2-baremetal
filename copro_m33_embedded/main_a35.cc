@@ -5,6 +5,7 @@
 // PH8 and the M33 toggles PF9.
 
 #include "aarch64/system_reg.hh"
+#include "drivers/copro_m33.hh"
 #include "drivers/pin.hh"
 #include "print/print.hh"
 #include "stm32mp2xx.h"
@@ -16,63 +17,48 @@ namespace
 {
 constexpr uintptr_t M33_LOAD_ADDR = 0x0E060000UL;
 
-void delay(unsigned n)
+void delay(unsigned n);
+void report_m33_boot_state();
+
+} // namespace
+
+int main()
 {
-	for (unsigned i = 0; i < n; i++)
-		asm("nop");
+	print("\nA35: Hello from Cortex-A35!\n");
+
+	Pin ph8{GPIO::H, PinNum::_8, PinMode::Output};
+
+	print("A35: Loading M33 firmware (", (int)m33_firmware_len, " bytes) into SRAM2\n");
+
+	print("A35: Starting M33 core after LED goes off in 3 ");
+	ph8.on();
+	delay(8'000'000);
+	print("2 ");
+	delay(8'000'000);
+	print("1 ");
+	ph8.off();
+	delay(8'000'000);
+	print("now\n");
+
+	start_m33({m33_firmware, m33_firmware_len}, M33_LOAD_ADDR);
+	print("A35: M33 released from hold-boot\n");
+
+	report_m33_boot_state();
+
+	unsigned count = 0;
+	while (true) {
+		ph8.on();
+		delay(3'000'000);
+		ph8.off();
+		delay(3'000'000);
+
+		if ((++count % 4) == 0)
+			print("A35: tick ", (int)count, "\n");
+	}
 }
 
-// The M33 runs secure, so a secure instruction fetch to SRAM2 must land on
-// secure RISAB pages: RISAB SRWIAD only forgives secure *data* accesses to
-// non-secure pages, not fetches. block_ram_enable_el3() cleared all page
-// security bits at boot, so flip SRAM2's pages (RISAB4) back to secure. The
-// A35's own accesses are secure too, so it can still read/write SRAM2.
-void sram2_set_secure()
+namespace
 {
-	for (auto i = 0u; i < 32; i++)
-		RISAB4->PGSECCFGR[i] = 0xFF; // all 8 blocks of each page secure
-}
-
-void load_m33_firmware()
-{
-	// Copy the embedded blob into SRAM2
-	auto *dst = reinterpret_cast<volatile uint8_t *>(M33_LOAD_ADDR);
-	for (unsigned i = 0; i < m33_firmware_len; i++)
-		dst[i] = m33_firmware[i];
-
-	// Clean the cache so a write to memory is ensured
-	for (uintptr_t a = M33_LOAD_ADDR; a < M33_LOAD_ADDR + m33_firmware_len; a += 64)
-		clean_dcache_address(a);
-
-	dsb_sy();
-	isb();
-}
-
-void start_m33()
-{
-	// Park CPU2 first for a known-clean state: assert hold-boot (BOOT_CPU2=0)
-	// and assert the M33 reset. Mirrors OP-TEE rproc_stop().
-	RCC->CPUBOOTCR &= ~RCC_CPUBOOTCR_BOOT_CPU2;
-	RCC->C2RSTCSETR = RCC_C2RSTCSETR_C2RST;
-
-	load_m33_firmware();
-
-	sram2_set_secure();
-
-	// Run the M33 secure: enable its TrustZone security extension and point the
-	// *secure* vector table at the loaded image (via the secure fetch alias).
-	// GPIO pins reset to secure (GPIOx_SECCFGR = 0xFFFF, RM0457 sec. 24.4.12),
-	// which the secure M33 can drive directly -- no per-pin handover needed.
-	CA35SYSCFG->M33_TZEN_CR |= CA35SYSCFG_M33_TZEN_CR_CFG_SECEXT;
-	CA35SYSCFG->M33_INITSVTOR_CR = (uint32_t)M33_LOAD_ADDR & CA35SYSCFG_M33_INITSVTOR_CR_INITSVTOR_Msk;
-	dsb_sy();
-	isb();
-
-	// Release hold-boot -> the M33 boots from INITSVTOR. The hardware
-	// automatically releases the M33 reset (see OP-TEE stm32_rproc_start()).
-	RCC->CPUBOOTCR |= RCC_CPUBOOTCR_BOOT_CPU2;
-}
-
 void report_m33_boot_state()
 {
 	print("A35: --- M33 boot diagnostics ---\n");
@@ -99,39 +85,10 @@ void report_m33_boot_state()
 	print("A35: PWR CPU2D2SR      = ", Hex{PWR->CPU2D2SR}, " (after wait)\n");
 	print("A35: -------------------------\n");
 }
-} // namespace
 
-int main()
+void delay(unsigned n)
 {
-	print("\nA35: Hello from Cortex-A35!\n");
-
-	Pin ph8{GPIO::H, PinNum::_8, PinMode::Output};
-
-	print("A35: Loading M33 firmware (", (int)m33_firmware_len, " bytes) into SRAM2\n");
-
-	print("A35: Starting M33 core after LED goes off in 3 ");
-	ph8.on();
-	delay(8'000'000);
-	print("2 ");
-	delay(8'000'000);
-	print("1 ");
-	ph8.off();
-	delay(8'000'000);
-	print("now\n");
-
-	start_m33();
-	print("A35: M33 released from hold-boot\n");
-
-	report_m33_boot_state();
-
-	unsigned count = 0;
-	while (true) {
-		ph8.on();
-		delay(3'000'000);
-		ph8.off();
-		delay(3'000'000);
-
-		if ((++count % 4) == 0)
-			print("A35: tick ", (int)count, "\n");
-	}
+	for (unsigned i = 0; i < n; i++)
+		asm("nop");
 }
+} // namespace
