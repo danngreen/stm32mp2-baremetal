@@ -244,6 +244,9 @@ endif
 flash-t32:
 	python3 ../scripts/flash_t32.py
 
+flash-stlink:
+	../scripts/flash-stlink.sh $(ELF)
+
 %.d: ;
 
 clean:

@@ -4,3 +4,7 @@ build/
 gpu/tools/cube_preview
 gpu/tools/*.png
 gpu/tools/*.ppm
+**/.gdb_history
+scripts/stlink/*.bin
+*.o
+*.d
