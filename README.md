@@ -492,7 +492,7 @@ which requires TRACE32 to be running with the python rcl started (see TRACE32 do
 and the TRACE32 python module to be installed. This script just runs
 
 ```bash
-python3 scripts/flash_t32.py
+python3 scripts/flash_t32.py [elf file]
 ```
 
 

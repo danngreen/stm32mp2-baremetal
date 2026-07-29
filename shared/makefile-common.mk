@@ -190,7 +190,7 @@ install:
 	diskutil unmount $(SDCARD_MOUNT_PATH)
 
 openocd:
-	openocd -s ../scripts/openocd -f board/stm32mp25x_dk.cfg
+	openocd -s $(SCRIPTDIR)/openocd -f board/stm32mp25x_dk.cfg
 
 debug: $(ELF)
 	$(ARCH)-gdb $(ELF)
@@ -240,12 +240,12 @@ endif
 
 .PHONY: flash
 
-# Use TRACE32 to flash the current project 
+# Use TRACE32 to flash the current project
 flash-t32:
-	python3 ../scripts/flash_t32.py
+	python3 $(SCRIPTDIR)/flash_t32.py $(ELF)
 
 flash-stlink:
-	../scripts/flash-stlink.sh $(ELF)
+	$(SCRIPTDIR)/flash-stlink.sh $(ELF)
 
 %.d: ;
 

@@ -34,7 +34,7 @@ clean:
 	rm -f firmware_m33.h
 
 flash-t32:
-	python3 flash_t32.py
+	python3 ../scripts/flash_t32.py build/corea35/main.elf
 
 flash-stlink:
 	../scripts/flash-stlink.sh build/corea35/main.elf

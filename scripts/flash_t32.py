@@ -2,10 +2,17 @@ import sys
 import lauterbach.trace32.rcl as t32
 from pathlib import Path
 
+# Usage: flash_t32.py [path/to/main.elf]
+# Relative paths are resolved against the calling directory (e.g. an example
+# project dir). Defaults to build/main.elf for the common single-image layout.
+elfarg = sys.argv[1] if len(sys.argv) > 1 else "build/main.elf"
+elfpath = (Path.cwd() / elfarg).resolve()
+
+if not elfpath.is_file():
+    print(f"ERROR: ELF not found: {elfpath}")
+    sys.exit(1)
+
 dbg = t32.connect()
-# Dir where we're calling the script from, e.g. an example project dir
-basepath = Path.cwd()
-elfpath = basepath / "build" / "main.elf"
 
 dbg.print(f"Flashing via python rcl {elfpath}...")
 
