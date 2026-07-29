@@ -1,32 +1,19 @@
-// Cortex-M33 side of the IPCC request/response demo.
-//
-// The A35 loads this image into SRAM2 and releases CPU2 from hold-boot. We
-// answer "work" requests: the A35 puts an index in the shared mailbox and
-// raises IPCC1 channel 1; we write the matching string back and raise
-// channel 2. See work.hh for the protocol and why the mailbox has no
-// semaphore around it.
-//
-// The M33 runs *secure* (the A35 sets CFG_SECEXT before releasing it) with the
-// SAU disabled, so the whole address map is Secure: the same peripheral
-// addresses and the same secure IPCC resources the A35 uses.
-//
-// No data cache here, so the shared mailbox needs no maintenance on this side
-// -- Work::flush()/refresh() reduce to a barrier.
-
 #include "interrupt_m33/interrupt.hh"
+#include "ipcc.hh"
 #include "print/print.hh"
 #include "stm32mp2xx.h"
 #include "work.hh"
+#include <atomic>
 #include <cstdint>
 
 using namespace Work;
 
 namespace
 {
-volatile bool request_pending = false; // set by the IPCC RX interrupt
+std::atomic<bool> request_pending{false}; // set by the IPCC RX interrupt
 
 // The "work": look up a string by index (1-based).
-constexpr const char *colors[] = {
+constexpr std::array colors{
 	"Orange",
 	"Blue",
 	"Green",
@@ -36,7 +23,7 @@ constexpr const char *colors[] = {
 	"Teal",
 	"Chartreuse",
 };
-constexpr uint32_t NumColors = sizeof(colors) / sizeof(colors[0]);
+constexpr uint32_t NumColors = colors.size();
 
 void write_result(const char *str)
 {
@@ -53,13 +40,6 @@ void write_result(const char *str)
 
 int main()
 {
-	// Deliberately no init_uart() here: the A35 brought the console up in its
-	// startup, long before it released us from hold-boot. Re-initialising would
-	// write USART->CR1 = 0 and kill whatever character the A35 had in flight.
-	//
-	// This is the only thing the M33 ever prints, and the A35 is silently
-	// waiting for our channel 2 "online" notification while we print it -- the
-	// two cores never use the UART at the same time.
 	print("M33: online, serving ", NumColors, " colors\n");
 
 	// Unmask our side of the request channel and let the NVIC deliver it. The
@@ -85,8 +65,7 @@ int main()
 		if (request_pending) {
 			request_pending = false;
 
-			// The mailbox is ours from the channel 1 interrupt until we raise
-			// channel 2 -- no other protection, by design (see work.hh).
+			// The mailbox is our ownership until we respond
 			uint32_t index = mailbox().index;
 			if (index >= 1 && index <= NumColors)
 				write_result(colors[index - 1]);

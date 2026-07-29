@@ -1,17 +1,7 @@
-// A35 core 0 side of the IPCC request/response demo.
-//
-// Loads and starts the M33, then forever: put an index in the shared mailbox,
-// tell the M33 over IPCC1 channel 1, wait for its channel 2 interrupt, and
-// print the string it wrote back. See work.hh for the protocol and why the
-// mailbox has no semaphore around it.
-//
-// Console discipline: only this core prints after startup (the M33 prints one
-// banner while this core is silently waiting for it to come online), so the
-// UART needs no locking either.
-
 #include "drivers/copro_m33.hh"
 #include "drivers/rcc.hh"
 #include "interrupt/interrupt.hh"
+#include "ipcc.hh"
 #include "print/print.hh"
 #include "stm32mp2xx.h"
 #include "work.hh"
@@ -19,8 +9,6 @@
 #include <cstdint>
 
 #include "firmware_m33.h"
-
-using namespace Work;
 
 namespace
 {
@@ -42,6 +30,8 @@ constexpr unsigned RequestPauseNops = 100'000'000;
 
 void ipcc_init_secure()
 {
+	using namespace Work;
+
 	RCC_Enable::IPCC1_::set();
 	RCC_Reset::IPCC1_::set();
 	RCC_Reset::IPCC1_::clear();
@@ -80,17 +70,19 @@ bool wait_for_response()
 
 int main()
 {
+	using namespace Work;
+
 	print("\nIPCC request/response demo (A35 <-> M33)\n");
 	print("===============================================\n\n");
 
-	park_m33(); // before ipcc_init_secure resets the mailbox peripheral
+	park_m33();
 
 	ipcc_init_secure();
 
 	mailbox().index = 0;
 	mailbox().served = 0;
 	mailbox().result[0] = '\0';
-	flush();
+	mailbox().flush();
 
 	// Register before starting the M33 so its "online" notification can't be
 	// missed. The ISR only acks the mailbox flag and raises ours.
@@ -103,9 +95,6 @@ int main()
 		}
 	});
 
-	// Print BEFORE releasing the M33: it prints its own banner as soon as it
-	// boots, and nothing coordinates the UART -- the A35 must already be
-	// silent (waiting below) by then.
 	print("A35_0: starting M33 (", m33_firmware_len, " bytes in SRAM2)\n");
 	start_m33(std::span<const uint8_t>{m33_firmware, m33_firmware_len}, M33_LOAD_ADDR);
 
@@ -118,26 +107,24 @@ int main()
 
 	uint32_t index = 1;
 	while (index < 12) {
-		// The mailbox is ours: write the request and hand it to the M33.
+
+		// The mailbox is ours: write the request and hand it to the M33
 		mailbox().index = index;
-		flush();
+		mailbox().flush();
 		IPCC1_<1>::set_flag<ChannelToM33>();
 
-		// The mailbox now belongs to the M33 -- hands off until it notifies us.
+		// The mailbox now belongs to the M33 -- hands off until it notifies us
 		if (!wait_for_response()) {
 			print("A35_0: WARNING: no answer for index ", index, "\n");
 		} else {
-			refresh();
-			print("A35_0: asked for ",
-				  index,
-				  ", M33 answered \"",
-				  mailbox().result,
-				  "\" (",
-				  mailbox().served,
-				  " served)\n");
+			mailbox().refresh();
+			print("A35_0: asked for ", index, ", ");
+			print("M33 answered \"", mailbox().result, "\" ");
+			print("(", mailbox().served, " served)\n");
 		}
 
 		index++;
+
 		delay(RequestPauseNops);
 	}
 
