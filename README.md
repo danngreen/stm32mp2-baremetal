@@ -200,9 +200,56 @@ size, CRCs) and starts the app.
 
 ## Console
 
-The UART communicates with your computer, which is running a console. This lets 
+The UART communicates with your computer, which is running a console program. This lets 
 you send/receive data from the STM32 chip, and is the primary method for verifying
 these examples.
+
+### Console via ST-LINK
+
+If you're using an EV1 board, then the UART is accessed over USB, using a normal
+USB cable going between the EV1's ST-LINK USB jack (CN21) and your computer.
+This is UART 2, and is the default if you don't specify any `UART=` option when
+building from the command-line, and don't specify any `UART := ` override in
+the Makefile
+
+### Console via GPIO Expander header
+
+Another alternative with the EV1 is to use a USB-UART dongle, with the
+TX/RX/GND pins of the dongle attached to the GPIO Expander header of the EV1.
+The other end of the dongle connects to your computer's USB port. These
+UART-USB dongles are cheap and easy to buy on many component stores or even
+Amazon. 
+
+This is the best way to have a UART console if you are using an external
+debugger (TRACE32/J-Link) with the MIPI-10 header. 
+
+You will need to attach a USB-UART dongle to the GPIO Expander:
+- Pin 6: GND
+- Pin 8: TX (mp2->computer) — PF13
+- Pin 10: RX (mp2<-computer) — PF14
+
+Building with the USART6 chosen is done from the command line like this:
+
+```bash
+make UART=6
+```
+
+Or you can specify it in the Makefile, by adding this line (or replacing an existing one):
+
+```make
+UART := 6
+```
+
+### Console via USART1 (custom board)
+
+Finally, if you have a custom board, you can use a USB-UART dongle attached to
+any UART your board exposes. Add your UART choice in `shared/uart_print.c`.
+Follow the example of how I added USART1 for my custom board. Building for a
+custom board works just like it does for the GPIO Expander UART: just build
+with `make UART=#` or add `UART := #` to the command-line. For example, my
+custom devboard uses USART1, so I build with `make UART=1 `
+
+### Console program
 
 You need to run a terminal console program on your computer, and connect to the TTY port at
 115200 8N1.
@@ -213,88 +260,19 @@ For example, using minicom on macOS (the device number varies):
 minicom -D /dev/cu.usbmodem1102
 ```
 
-When you boot up the EV1, you should see messages from TF-A and then from your app.
+When you boot up the board, you should see messages from TF-A and then from
+your app.
 
 If you don't see anything, verify your app was built with the right `UART`
-(USART2 for ST-LINK, USART6 for the GPIO Expander header + dongle, or USART1 on
-custom board header pins PB8/PB10 + dongle). Note that TF-A prints its own early boot
-messages to *its* console, which is independent of the UART
-your app selects; only the app's `print()` output follows `UART`.
-So if you are not using the ST-LINK UART2, then you will need to re-build TFA in order 
-to see it's console messages. If you choose not to rebuild TF-A, then it's
-safe to not see the TF-A boot messages.
+(`UART=2` for ST-LINK, `UART=6` for the GPIO Expander header + dongle).
 
-### Console selection 
+Note that TF-A prints its own early boot messages to *its* console, which is
+independent of the UART your app selects. Only the app's `print()` output is
+changed by the `UART=` build option. So if you are not using the ST-LINK UART2,
+then you will need to re-build TFA in order to see its console messages. It's
+also safe to ignore TF-A boot messages, but if you run into problems booting
+you probably will want to see them to debug.
 
-The main thing to configure is the choice of UART (aka USART), which
-is how the STM chip sends and receives messages to/from your console. By
-default, USART2 is used, which is the one the EV1 board has connected to the
-ST-LINK interface via USB-C jack CN21.
-
-To choose a different UART, set `UART` to `1`, `2`, or `6` in the
-project's Makefile or on the `make` command line. The app configures its
-console UART at startup in `init_uart()` in `shared/print/uart_print.c`.
-The settings are 115200 8N1
-
-Note that TF-A also inits and prints to its UART, which can be configured separately 
-(see TF-A project for details). By default, TF-A also uses USART2 (ST-LINK).
-
-### Console via ST-LINK
-
-By default all console logging (print/printf) goes to USART2, which is
-connected to the ST-LINK adaptor via the USB-C jack (CN21).
-To use this, make sure in your Makefile it says this (or doesn't set anything):
-
-```
-UART := 2
-```
-
-### Console via GPIO Expander header
-
-Another option is to use USART6 via the GPIO Expander port. This is the best
-way to have a UART console if you are using an external debugger
-(TRACE32/J-Link) with the MIPI-10 header. 
-
-You will need to attach a USB-UART dongle to the GPIO Expander:
-- Pin 6: GND
-- Pin 8: TX (mp2->computer) — PF13
-- Pin 10: RX (mp2<-computer) — PF14
-
-
-To use these pins, put this in your Makefile:
-```
-UART := 6
-```
-
-or you can specify it at build time:
-
-```bash
-make UART=6
-```
-
-The app brings USART6 up itself, so this works even if TF-A was built for 
-a different console.
-
-### Console via USART1 (custom board)
-
-A third option is USART1, which is used on a custom board. 
-- PB8: TX (mp2->computer)
-- PB10: RX (mp2<-computer)
-
-Attach a USB-UART dongle to these pins (and to a GND pin on the header).
-
-To use USART1, put this in your Makefile:
-```
-UART := 1
-```
-
-or specify it at build time:
-
-```bash
-make UART=1
-```
-
-This assumes TF-A grants the secure world access to USART1 and powers up VDDIO4 for GPIOB (which our custom build does).
 
 ## BOARD selection
 
