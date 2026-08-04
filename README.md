@@ -210,7 +210,7 @@ If you're using an EV1 board, then the UART is accessed over USB, using a normal
 USB cable going between the EV1's ST-LINK USB jack (CN21) and your computer.
 This is UART 2, and is the default if you don't specify any `UART=` option when
 building from the command-line, and don't specify any `UART := ` override in
-the Makefile
+the Makefile.
 
 ### Console via GPIO Expander header
 
@@ -221,7 +221,8 @@ UART-USB dongles are cheap and easy to buy on many component stores or even
 Amazon. 
 
 This is the best way to have a UART console if you are using an external
-debugger (TRACE32/J-Link) with the MIPI-10 header. 
+debugger (TRACE32/J-Link) with the MIPI-10 header (see Debugging section
+below).
 
 You will need to attach a USB-UART dongle to the GPIO Expander:
 - Pin 6: GND
@@ -240,7 +241,7 @@ Or you can specify it in the Makefile, by adding this line (or replacing an exis
 UART := 6
 ```
 
-### Console via USART1 (custom board)
+### Console on a custom board
 
 Finally, if you have a custom board, you can use a USB-UART dongle attached to
 any UART your board exposes. Add your UART choice in `shared/uart_print.c`.
@@ -296,34 +297,38 @@ it boots up and says "Ready" and then hangs.
 
 While it's hanging, you can load or reload any of the other projects over SWD.
 You can just leave the SD card installed in the EV1, and reboot with the Reset button.
-Loading a new project just means waiting until it boots (1-2 seconds)
+Loading a new project just means waiting until it boots (<1 second usually)
 and then loading the binary or elf file with your debugging software.
 
-There are two ways to connect a debugger to the EV1 board:
-- Connecting a USB cable to the EV1's ST-LINK via the USB jack
-- Connecting a 10-pin SWD cable to the EV1's SWD header (CN22 MIPI-10) and
-  using an external debugger such as the J-Link or TRACE32.
+There are three ways to connect a debugger to the EV1 board:
+1. Connecting a USB cable to the EV1's ST-LINK via the USB jack
+2. Connecting an ST-LINK-V3 debugger to the EV1's SWD header (CN22 MIPI-10).
+3. Connecting a J-Link or TRACE32 external debugger to the EV1's SWD header (CN22 MIPI-10).
 
-The first way (direct USB cable to the EV1) connects to an on-board ST-LINK 
-circuit on the EV1. If you have a custom board, you can use an external ST-LINK-V3
-debugger and follow the same steps.
+The first way (direct USB cable to the EV1) connects to an on-board ST-LINK
+circuit on the EV1. The second way (using an external ST-LINK-V3 debugger) is
+essentially the same thing, so follow the steps in the next section for method
+1 or 2. The third way has a different setup, so skip down to *Debugging via the
+MIPI-10 header (J-Link or TRACE32)*.
 
 ## Debugging with the EV1's ST-LINK via the USB jack (or with an external ST-LINK-V3)
 
 1. Connect your computer to the ST-LINK USB jack on the EV1. If you're using an
    external ST-LINK-V3 with a custom board, then connect it to the 10-pin SWD
-   MIPI-10 header (CN22) and make sure to connect a UART (see discussion on
-   console selection).
+   MIPI-10 header (CN22). To use the MIPI-10 header, you may need to install
+   jumper J13, which resets the MCU that handles the internal ST-LINK (however
+   some users have reported not needing to do this). If that's the case, then
+   follow the *Debugging via the MIPI-10 header* section about power and UART.
 
 2. Power on with the SD card installed, and open a console terminal on your
-   computer as described above in "Running the program".
+   computer as described above. 
 
 3. Start openocd. The scripts for the stm32mp2 chips are included in this repo,
-   as well as the openocd config file (`openocd.cfg`). So start openocd in a
-   new terminal window like this:
+   as well as the openocd config file (`openocd.cfg`). If you laucnh openocd in a
+   new terminal window from the repo root, it will find the scripts automatically:
 
 ```bash
-cd stm32mp2-baremetal     # must be in this dir where the openocd.cfg file lives
+cd stm32mp2-baremetal     # be in this dir for openocd to find the scripts automatically
 openocd
 ```
 
@@ -375,7 +380,7 @@ aarch64-none-elf-gdb build/main.elf
 
 If gdb complains that it has a security setting preventing it from running the
 .gdbinit script, then either follow the instructions it provides to allow this
-directory, or run the command contained in the .gdbinit file yourself:
+directory, or run the commands contained in the .gdbinit file yourself:
 
 ```
 target extended-remote localhost:3333
@@ -410,12 +415,14 @@ There's a helper script in `scripts/stlink/` which you can invoke with:
 make flash-stlink
 ```
 
-This will reset the device and flash the current project. 
+This will reset the device and flash the current project. If you have an openocd
+server running, it will use that, so as to not disconnect your gdb session. Otherwise
+it will launch openocd, run the script, and kill the openocd process afterwards.
 
 ## Debugging via the MIPI-10 header (J-Link or TRACE32)
 
 If you prefer to use an external debugger like the J-Link or the TRACE32, you
-can connect via the MIPI-10 header CN22.
+can connect to the EV1 via the MIPI-10 header CN22.
 
 The header has the NRST pin, but no JTRST pin, so JTAG is not reliable. I found
 SWD to be a better connection because of this. I've had excellent results with
@@ -460,14 +467,14 @@ or something like this, as it seems to work fine once the MMU is set up.
 
 The TRACE32 debugger will connect to the EV1 board reliably. I've included a
 t32 cmm file in scripts to help in `scripts/t32-mp257.cmm`. 
-You can also reset and flash with 
+You can also reset and flash with this helper:
 
 ```bash
 make flash-t32
 ```
 
 which requires TRACE32 to be running with the python rcl started (see TRACE32 docs),
-and the TRACE32 python module to be installed. This script just runs
+and the TRACE32 python module to be installed. This script just runs a python script:
 
 ```bash
 python3 scripts/flash_t32.py [elf file]
@@ -508,8 +515,7 @@ https://github.com/STMicroelectronics/meta-st-stm32mp/tree/scarthgap/recipes-dev
 OpenOCD stuff here:
 https://github.com/STMicroelectronics/meta-st-stm32mp/tree/scarthgap/recipes-devtools/openocd
 
-
-The CA35 CMSIS device headers are missing from the STM32MP2 Cube HAL (only the M33 and M0 are present).
+The CA35 CMSIS device headers are missing from the STM32MP2 Cube HAL (only the M33 and M0+ are present).
 But they are here in the DDR Firmware repo:
 https://github.com/STMicroelectronics/STM32DDRFW-UTIL/tree/main/Drivers/CMSIS/Device/ST/STM32MP2xx/Include
 I've copied them into this repo in the shared/cmsis-device dir.
