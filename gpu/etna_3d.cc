@@ -1,5 +1,6 @@
 #include "etna_3d.hh"
 #include "etna.hh"
+#include "etna_context.hh"
 #include "gpu_regs.hh"
 #include "gpu_regs_3d.hh"
 #include <algorithm>
@@ -659,180 +660,367 @@ void emit_triangle_tex(CmdStream &cs,
 	cs.stall(SYNC_RECIPIENT_FE, SYNC_RECIPIENT_PE);
 }
 
-// Generalized mesh draw (see etna_3d.hh). The per-draw sequence is the proven
-// vec4-varying triangle path with three generalizations: optional D16 LESS
-// depth (as in emit_triangle), parametric shader sizes/registers, and a float
-// uniform upload to the unified bank (VS reads them as u0.. with rgroup=
-// uniform; VS_UNIFORM_BASE = 0). Vertex format is fixed: pos vec3 @0 + vec4
-// attribute @12, one interleaved stream.
-void emit_mesh(CmdStream &cs, const MeshDraw &d)
+// =============================================================================
+//  Context -- dirty-state draw emission (see etna_context.hh)
+// =============================================================================
+//
+// This is the single implementation of the per-draw state; emit_mesh() below is
+// a one-shot Context, so the first draw of any Context emits exactly the same
+// register sequence, in the same order, that the pipe emitted before dirty
+// tracking existed. The five hardware-verified 3D tests all go through
+// emit_mesh, so they are the regression suite for that full-emit path.
+//
+// Register blocks appear below in their original order; each is wrapped in the
+// dirty groups it depends on. Blocks marked DirtyStatic are invariant for our
+// fixed vertex layout and shader linkage, so they are emitted once per Context.
+
+namespace
 {
-	emit_reset(cs);
+uint32_t bo_addr(const Bo *b)
+{
+	return b ? b->gpu_addr() : 0;
+}
+} // namespace
 
-	cs.flush_cache();
-	cs.stall(SYNC_RECIPIENT_RA, SYNC_RECIPIENT_PE);
-
-	// --- vertex input (NFE): pos vec3 @0 + vec4 @12, one interleaved stream --
-	cs.set_state(NFE_ATTRIB_CONFIG0_0 + 0, NFE_TYPE_FLOAT | (3u << 12));
-	cs.set_state(NFE_ATTRIB_SCALE0 + 0, fui(1.0f));
-	cs.set_state(NFE_ATTRIB_CONFIG1_0 + 0, 12u);
-	cs.set_state(NFE_ATTRIB_CONFIG0_0 + 4, NFE_TYPE_FLOAT | (4u << 12) | (12u << 16));
-	cs.set_state(NFE_ATTRIB_SCALE0 + 4, fui(1.0f));
-	cs.set_state(NFE_ATTRIB_CONFIG1_0 + 4, 0x800u | 28u);
-	cs.set_state_reloc(NFE_VERTEX_STREAM_BASE0, {d.vtx, RelocRead, 0});
-	cs.set_state(NFE_VERTEX_STREAM_CONTROL0, d.vtx_stride);
-	cs.set_state(NFE_VERTEX_STREAM_DIVISOR0, 0);
-
-	cs.set_state(GL_MULTI_SAMPLE_CONFIG, 0);
-
-	// --- VS config: 2 inputs, 2 outputs (position + 1 varying) ---------------
-	cs.set_state(VS_OUTPUT_COUNT, 2);
-	cs.set_state(VS_INPUT_COUNT, 0x102);
-	cs.set_state(VS_TEMP_REGISTER_CONTROL, d.vs_temps);
-	cs.set_state(VS_LOAD_BALANCING, 0x0F3F0241);
-
-	// --- PA viewport -----------------------------------------------------------
-	set_state_fixp(cs, PA_VIEWPORT_SCALE_X, fixp16(d.width / 2.0f));
-	set_state_fixp(cs, PA_VIEWPORT_SCALE_Y, fixp16(d.height / 2.0f));
-	cs.set_state(PA_VIEWPORT_SCALE_Z, fui(1.0f));
-	set_state_fixp(cs, PA_VIEWPORT_OFFSET_X, fixp16(d.width / 2.0f));
-	set_state_fixp(cs, PA_VIEWPORT_OFFSET_Y, fixp16(d.height / 2.0f));
-	cs.set_state(PA_VIEWPORT_OFFSET_Z, fui(0.0f));
-	// All three width registers take HALF the width (Mesa: fui(line_width/2)).
-	// The defaults of 1.0 reproduce the fui(0.5f) these registers were pinned
-	// to before primitives existed.
-	const uint32_t half_line = fui(d.line_width / 2.0f);
-	cs.set_state(PA_LINE_WIDTH, half_line);
-	cs.set_state(PA_POINT_SIZE, fui(d.point_size / 2.0f));
-	cs.set_state(PA_SYSTEM_MODE, 0x1);
-	cs.set_state(PA_ATTRIBUTE_ELEMENT_COUNT, 1); // 1 varying
-	// Adds WIDE_LINE for line primitives -- without it they draw nothing at
-	// all on this core (etna_prim.hh) -- plus the cull mode (etna_raster.hh).
-	cs.set_state(PA_CONFIG, pa_config(d.prim) | cull_bits(d.cull, d.front_face));
-	// Consulted only when PA_CONFIG.WIDE_LINE is set; same value as PA_LINE_WIDTH.
-	cs.set_state(PA_WIDE_LINE_WIDTH0, half_line);
-	cs.set_state(PA_WIDE_LINE_WIDTH1, half_line);
-
-	// --- SE scissor + clip ------------------------------------------------------
-	// A disabled scissor resolves to the whole target, reproducing the fixed
-	// full-target rect this used to emit. maxx/maxy are exclusive. Mesa emits
-	// no CLIP_LEFT/TOP -- the clip rect's origin is implicitly 0 and only the
-	// scissor carries the min corner.
+Context::Tracked Context::snapshot(const MeshDraw &d)
+{
 	const Scissor sc = d.scissor.resolved(d.width, d.height);
-	set_state_fixp(cs, SE_SCISSOR_LEFT, sc.minx << 16);
-	set_state_fixp(cs, SE_SCISSOR_TOP, sc.miny << 16);
-	set_state_fixp(cs, SE_SCISSOR_RIGHT, (sc.maxx << 16) + SE_SCISSOR_MARGIN_RIGHT);
-	set_state_fixp(cs, SE_SCISSOR_BOTTOM, (sc.maxy << 16) + SE_SCISSOR_MARGIN_BOTTOM);
-	cs.set_state(SE_DEPTH_SCALE, 0);
-	cs.set_state(SE_DEPTH_BIAS, 0);
-	cs.set_state(SE_CONFIG, 0);
-	set_state_fixp(cs, SE_CLIP_RIGHT, (sc.maxx << 16) + SE_CLIP_MARGIN_RIGHT);
-	set_state_fixp(cs, SE_CLIP_BOTTOM, (sc.maxy << 16) + SE_CLIP_MARGIN_BOTTOM);
+	return Tracked{
+		.rt = bo_addr(d.rt),
+		.rt_stride = d.rt_stride,
+		.depth = bo_addr(d.depth),
+		.depth_stride = d.depth_stride,
+		.width = d.width,
+		.height = d.height,
+		.alpha_config = d.blend.pe_alpha_config(),
+		.color_format = d.blend.pe_color_format(),
+		// The depth word depends on whether a buffer is bound at all, so fold
+		// that in here rather than comparing the DepthState alone.
+		.depth_config = d.depth ? d.depth_state.pe_depth_config() : PE_DEPTH_CONFIG_DISABLED,
+		.pa_config = pa_config(d.prim) | cull_bits(d.cull, d.front_face),
+		.line_width = fui(d.line_width / 2.0f),
+		.point_size = fui(d.point_size / 2.0f),
+		.sc_minx = sc.minx,
+		.sc_miny = sc.miny,
+		.sc_maxx = sc.maxx,
+		.sc_maxy = sc.maxy,
+		.vs = bo_addr(d.vs),
+		.vs_words = d.vs_words,
+		.vs_temps = d.vs_temps,
+		.ps = bo_addr(d.ps),
+		.ps_words = d.ps_words,
+		.ps_temps = d.ps_temps,
+		.ps_out_reg = d.ps_out_reg,
+		.vtx = bo_addr(d.vtx),
+		.vtx_stride = d.vtx_stride,
+	};
+}
 
-	// --- RA ----------------------------------------------------------------------
-	cs.set_state(RA_CONTROL, 0x1);
-	cs.set_state(RA_EARLY_DEPTH, RA_EARLY_DEPTH_DISABLED);
+uint32_t Context::compute_dirty(const Tracked &t, const MeshDraw &d) const
+{
+	uint32_t dirty = dirty_;
 
-	// --- PS config ----------------------------------------------------------------
-	cs.set_state(PS_OUTPUT_REG, d.ps_out_reg);
-	cs.set_state(PS_INPUT_COUNT, 0x102); // COUNT(2) | UNK8(1)
-	cs.set_state(PS_TEMP_REGISTER_CONTROL, d.ps_temps);
-	cs.set_state(PS_CONTROL, 0x2); // SATURATE_RT0
+	if (t.rt != cur_.rt || t.rt_stride != cur_.rt_stride || t.depth != cur_.depth ||
+		t.depth_stride != cur_.depth_stride || t.width != cur_.width || t.height != cur_.height)
+		dirty |= DirtyFramebuffer;
 
-	// --- PE render target + optional depth -----------------------------------
-	// With no depth buffer bound the mode is NONE; otherwise the func/mask come
-	// from the depth state (etna_depth.hh).
-	cs.set_state(PE_DEPTH_CONFIG, d.depth ? d.depth_state.pe_depth_config() : PE_DEPTH_CONFIG_DISABLED);
-	cs.set_state(PE_DEPTH_NEAR, fui(0.0f));
-	cs.set_state(PE_DEPTH_FAR, fui(1.0f));
-	cs.set_state(PE_DEPTH_NORMALIZE, d.depth ? fui(65535.0f) : 0);
-	cs.set_state(PE_DEPTH_STRIDE, d.depth_stride);
-	if (d.depth)
-		cs.set_state_reloc(PE_PIPE_DEPTH_ADDR0, {d.depth, static_cast<uint32_t>(RelocRead | RelocWrite), 0});
-	cs.set_state(PE_STENCIL_OP, 0);
-	cs.set_state(PE_STENCIL_CONFIG, 0);
-	cs.set_state(PE_ALPHA_OP, 0); // alpha *test* off (distinct from blending)
-	// Constant-color blend factors are not supported, so the blend color is
-	// always 0 -- see the BLEND_FUNC note in gpu_regs_3d.hh.
-	cs.set_state(PE_ALPHA_BLEND_COLOR, 0);
-	// Blending, and the OVERWRITE bit it forces off: with blending live the PE
-	// must read the render target back, so it may not take the overwrite fast
-	// path. Both words come from the same BlendState (etna_blend.hh).
-	cs.set_state(PE_ALPHA_CONFIG, d.blend.pe_alpha_config());
-	cs.set_state(PE_COLOR_FORMAT, d.blend.pe_color_format());
-	cs.set_state(PE_COLOR_STRIDE, d.rt_stride);
-	cs.set_state(PE_HDEPTH_CONTROL, 0);
-	cs.set_state_reloc(PE_PIPE_COLOR_ADDR0, {d.rt, static_cast<uint32_t>(RelocRead | RelocWrite), 0});
-	cs.set_state(PE_STENCIL_CONFIG_EXT, 0);
-	cs.set_state(PE_LOGIC_OP, PE_LOGIC_OP_COPY_SINGLEBUF);
-	// Dither stays off (all-ones). Mesa disables dithering whenever blending is
-	// enabled on cores without the PE_DITHER_FIX feature, because the two
-	// together visibly shift colors; we never dither, so nothing to switch.
-	cs.set_state(PE_DITHER0, 0xFFFFFFFF);
-	cs.set_state(PE_DITHER1, 0xFFFFFFFF);
-	cs.set_state(PE_STENCIL_CONFIG_EXT2, 0);
-	cs.set_state(PE_MEM_CONFIG, 0);
+	if (t.alpha_config != cur_.alpha_config || t.color_format != cur_.color_format)
+		dirty |= DirtyBlend;
 
-	// --- HALTI5 shader linkage: 1 smooth vec4 varying -------------------------
-	cs.set_state(FE_HALTI5_ID_CONFIG, 0);
-	cs.set_state(VS_HALTI5_OUTPUT_COUNT, 0x2002);
-	cs.set_state(VS_HALTI5_UNK008A0, 0x0881000E);
-	cs.set_state(VS_HALTI5_OUTPUT0, 0x0302); // pos=t2, varying=t3
-	cs.set_state(VS_HALTI5_INPUT0, 0x0100);	 // attr0->t0, attr1->t1
-	cs.set_state(PA_VS_OUTPUT_COUNT, 2);
-	cs.set_state(PA_VARYING_NUM_COMPONENTS0, 4);
-	cs.set_state(PA_VARYING_NUM_COMPONENTS1, 0);
-	cs.set_state(PS_VARYING_NUM_COMPONENTS0, 4);
-	cs.set_state(PS_VARYING_NUM_COMPONENTS1, 0);
-	cs.set_state(GL_VARYING_TOTAL_COMPONENTS, 4);
-	cs.set_state(GL_HALTI5_SH_SPECIALS, 0x7F7F7F00);
-	cs.set_state(GL_HALTI5_SHADER_ATTRIBUTES0, 0);
+	if (t.depth_config != cur_.depth_config)
+		dirty |= DirtyDepthState;
 
-	cs.stall(SYNC_RECIPIENT_FE, SYNC_RECIPIENT_PE);
+	if (t.pa_config != cur_.pa_config || t.line_width != cur_.line_width || t.point_size != cur_.point_size)
+		dirty |= DirtyRaster;
 
-	// --- shader ICACHE upload (parametric sizes) -------------------------------
-	cs.set_state(VS_NEWRANGE_LOW, 0);
-	cs.set_state(VS_HALTI5_RANGE_HIGH, d.vs_words / 4);
-	cs.set_state_reloc(VS_INST_ADDR, {d.vs, RelocRead, 0});
-	cs.set_state(SH_CONFIG, SH_CONFIG_RTNE);
-	cs.set_state(SH_ICACHE_CONTROL, SH_ICACHE_CONTROL_ENABLE);
-	cs.set_state(VS_ICACHE_COUNT, d.vs_words / 4 - 1);
-	cs.set_state(PS_NEWRANGE_LOW, 0);
-	cs.set_state(PS_HALTI5_RANGE_HIGH, d.ps_words / 4);
-	cs.set_state_reloc(PS_INST_ADDR, {d.ps, RelocRead, 0});
-	cs.set_state(SH_CONFIG, SH_CONFIG_RTNE);
-	cs.set_state(SH_ICACHE_CONTROL, SH_ICACHE_CONTROL_ENABLE);
-	cs.set_state(PS_ICACHE_COUNT, d.ps_words / 4 - 1);
+	if (t.sc_minx != cur_.sc_minx || t.sc_miny != cur_.sc_miny || t.sc_maxx != cur_.sc_maxx ||
+		t.sc_maxy != cur_.sc_maxy)
+		dirty |= DirtyScissor;
 
-	// --- uniforms into the unified bank (VS u0.. at base 0) --------------------
-	// VS uniforms are written through the MIRROR window (0x34000); 0x36000 is
-	// the PS stage's window (which is why the FS color uniform worked there).
-	// Uploading VS uniforms via the PS window leaves the VS reading zeros ->
-	// degenerate clip positions -> "draw runs clean, zero fragments, no faults".
-	cs.set_state(VS_UNIFORM_BASE, 0);
-	cs.set_state(PS_UNIFORM_BASE, static_cast<uint32_t>(d.uniforms.size() / 4)); // PS u0 after the VS's
-	if (!d.uniforms.empty()) {
-		cs.emit(cmd_load_state(SH_HALTI5_UNIFORMS_MIRROR0, static_cast<uint32_t>(d.uniforms.size())));
-		for (float f : d.uniforms)
-			cs.emit(fui(f));
-		cs.align();
+	if (t.vs != cur_.vs || t.vs_words != cur_.vs_words || t.vs_temps != cur_.vs_temps || t.ps != cur_.ps ||
+		t.ps_words != cur_.ps_words || t.ps_temps != cur_.ps_temps || t.ps_out_reg != cur_.ps_out_reg)
+		dirty |= DirtyShaders;
+
+	// Uniforms are compared by VALUE: callers legitimately reuse one array and
+	// rewrite it between draws (the cube demo does), so the address tells us
+	// nothing. Beyond what we can mirror, assume dirty.
+	const uint32_t n = static_cast<uint32_t>(d.uniforms.size());
+	if (uniforms_untracked_ || n > kMaxTrackedUniforms || n != uniform_count_) {
+		dirty |= DirtyUniforms;
+	} else {
+		for (uint32_t i = 0; i < n; i++)
+			if (d.uniforms[i] != uniforms_[i]) {
+				dirty |= DirtyUniforms;
+				break;
+			}
 	}
 
-	cs.set_state(VS_ICACHE_PREFETCH, 0);
-	cs.set_state(PS_ICACHE_PREFETCH, 0);
-	cs.stall(SYNC_RECIPIENT_RA, SYNC_RECIPIENT_PE);
+	if (t.vtx != cur_.vtx || t.vtx_stride != cur_.vtx_stride)
+		dirty |= DirtyVertex;
 
-	// --- DRAW --------------------------------------------------------------------
+	return dirty;
+}
+
+bool Context::draw(const MeshDraw &d)
+{
+	// Refuse rather than overrun: CmdStream is backed by a fixed Bo, so
+	// reserve() cannot grow it. The caller should drain, submit, and continue
+	// in a fresh stream.
+	if (cs_->avail() < kMaxDrawDwords)
+		return false;
+
+	CmdStream &cs = *cs_;
+	const uint32_t start = cs.offset();
+	const Tracked t = snapshot(d);
+	const uint32_t dirty = compute_dirty(t, d);
+
+	// One-time pipe init.
+	if (dirty & DirtyStatic)
+		emit_reset(cs);
+
+	// --- sync 1: the caches hold pixels rendered with the OLD state ----------
+	// Only when the state those caches depend on is changing (Mesa: BLEND ->
+	// COLOR, ZSA -> DEPTH, FRAMEBUFFER -> both).
+	uint32_t to_flush = 0;
+	if (dirty & DirtyBlend)
+		to_flush |= GL_FLUSH_CACHE_COLOR;
+	if (dirty & DirtyDepthState)
+		to_flush |= GL_FLUSH_CACHE_DEPTH;
+	if (dirty & DirtyFramebuffer)
+		to_flush |= GL_FLUSH_CACHE_COLOR | GL_FLUSH_CACHE_DEPTH;
+	if (to_flush) {
+		cs.flush_cache(to_flush);
+		cs.stall(SYNC_RECIPIENT_RA, SYNC_RECIPIENT_PE);
+	}
+
+	// --- vertex input (NFE): pos vec3 @0 + vec4 @12, one interleaved stream --
+	if (dirty & DirtyStatic) {
+		// Attribute FORMAT is fixed by MeshDraw's layout; only the stream
+		// address and stride below actually vary between draws.
+		cs.set_state(NFE_ATTRIB_CONFIG0_0 + 0, NFE_TYPE_FLOAT | (3u << 12));
+		cs.set_state(NFE_ATTRIB_SCALE0 + 0, fui(1.0f));
+		cs.set_state(NFE_ATTRIB_CONFIG1_0 + 0, 12u);
+		cs.set_state(NFE_ATTRIB_CONFIG0_0 + 4, NFE_TYPE_FLOAT | (4u << 12) | (12u << 16));
+		cs.set_state(NFE_ATTRIB_SCALE0 + 4, fui(1.0f));
+		cs.set_state(NFE_ATTRIB_CONFIG1_0 + 4, 0x800u | 28u);
+	}
+	if (dirty & DirtyVertex) {
+		cs.set_state_reloc(NFE_VERTEX_STREAM_BASE0, {d.vtx, RelocRead, 0});
+		cs.set_state(NFE_VERTEX_STREAM_CONTROL0, d.vtx_stride);
+		cs.set_state(NFE_VERTEX_STREAM_DIVISOR0, 0);
+	}
+
+	if (dirty & DirtyStatic)
+		cs.set_state(GL_MULTI_SAMPLE_CONFIG, 0);
+
+	// --- VS config: 2 inputs, 2 outputs (position + 1 varying) ---------------
+	if (dirty & (DirtyStatic | DirtyShaders)) {
+		cs.set_state(VS_OUTPUT_COUNT, 2);
+		cs.set_state(VS_INPUT_COUNT, 0x102);
+		cs.set_state(VS_TEMP_REGISTER_CONTROL, d.vs_temps);
+		cs.set_state(VS_LOAD_BALANCING, 0x0F3F0241);
+	}
+
+	// --- PA viewport (derived from the draw size) ----------------------------
+	if (dirty & DirtyFramebuffer) {
+		set_state_fixp(cs, PA_VIEWPORT_SCALE_X, fixp16(d.width / 2.0f));
+		set_state_fixp(cs, PA_VIEWPORT_SCALE_Y, fixp16(d.height / 2.0f));
+		cs.set_state(PA_VIEWPORT_SCALE_Z, fui(1.0f));
+		set_state_fixp(cs, PA_VIEWPORT_OFFSET_X, fixp16(d.width / 2.0f));
+		set_state_fixp(cs, PA_VIEWPORT_OFFSET_Y, fixp16(d.height / 2.0f));
+		cs.set_state(PA_VIEWPORT_OFFSET_Z, fui(0.0f));
+	}
+
+	// --- PA raster state -----------------------------------------------------
+	if (dirty & DirtyRaster) {
+		// All three width registers take HALF the width (Mesa: line_width/2).
+		cs.set_state(PA_LINE_WIDTH, t.line_width);
+		cs.set_state(PA_POINT_SIZE, t.point_size);
+	}
+	if (dirty & DirtyStatic) {
+		cs.set_state(PA_SYSTEM_MODE, 0x1);
+		cs.set_state(PA_ATTRIBUTE_ELEMENT_COUNT, 1); // 1 varying
+	}
+	if (dirty & DirtyRaster) {
+		// WIDE_LINE for line prims (etna_prim.hh) + cull mode (etna_raster.hh).
+		cs.set_state(PA_CONFIG, t.pa_config);
+		cs.set_state(PA_WIDE_LINE_WIDTH0, t.line_width);
+		cs.set_state(PA_WIDE_LINE_WIDTH1, t.line_width);
+	}
+
+	// --- SE scissor + clip ---------------------------------------------------
+	// Also framebuffer-dependent: a disabled scissor resolves to the draw size.
+	if (dirty & (DirtyScissor | DirtyFramebuffer)) {
+		set_state_fixp(cs, SE_SCISSOR_LEFT, t.sc_minx << 16);
+		set_state_fixp(cs, SE_SCISSOR_TOP, t.sc_miny << 16);
+		set_state_fixp(cs, SE_SCISSOR_RIGHT, (t.sc_maxx << 16) + SE_SCISSOR_MARGIN_RIGHT);
+		set_state_fixp(cs, SE_SCISSOR_BOTTOM, (t.sc_maxy << 16) + SE_SCISSOR_MARGIN_BOTTOM);
+	}
+	if (dirty & DirtyStatic) {
+		cs.set_state(SE_DEPTH_SCALE, 0);
+		cs.set_state(SE_DEPTH_BIAS, 0);
+		cs.set_state(SE_CONFIG, 0);
+	}
+	if (dirty & (DirtyScissor | DirtyFramebuffer)) {
+		set_state_fixp(cs, SE_CLIP_RIGHT, (t.sc_maxx << 16) + SE_CLIP_MARGIN_RIGHT);
+		set_state_fixp(cs, SE_CLIP_BOTTOM, (t.sc_maxy << 16) + SE_CLIP_MARGIN_BOTTOM);
+	}
+
+	// --- RA ------------------------------------------------------------------
+	if (dirty & DirtyStatic) {
+		cs.set_state(RA_CONTROL, 0x1);
+		cs.set_state(RA_EARLY_DEPTH, RA_EARLY_DEPTH_DISABLED);
+	}
+
+	// --- PS config -----------------------------------------------------------
+	if (dirty & (DirtyStatic | DirtyShaders)) {
+		cs.set_state(PS_OUTPUT_REG, d.ps_out_reg);
+		cs.set_state(PS_INPUT_COUNT, 0x102); // COUNT(2) | UNK8(1)
+		cs.set_state(PS_TEMP_REGISTER_CONTROL, d.ps_temps);
+		cs.set_state(PS_CONTROL, 0x2); // SATURATE_RT0
+	}
+
+	// --- PE depth ------------------------------------------------------------
+	if (dirty & (DirtyDepthState | DirtyFramebuffer)) {
+		cs.set_state(PE_DEPTH_CONFIG, t.depth_config);
+		cs.set_state(PE_DEPTH_NEAR, fui(0.0f));
+		cs.set_state(PE_DEPTH_FAR, fui(1.0f));
+		cs.set_state(PE_DEPTH_NORMALIZE, d.depth ? fui(65535.0f) : 0);
+		cs.set_state(PE_DEPTH_STRIDE, d.depth_stride);
+		if (d.depth)
+			cs.set_state_reloc(PE_PIPE_DEPTH_ADDR0, {d.depth, static_cast<uint32_t>(RelocRead | RelocWrite), 0});
+	}
+
+	// --- PE stencil / alpha test (both permanently off) ----------------------
+	if (dirty & DirtyStatic) {
+		cs.set_state(PE_STENCIL_OP, 0);
+		cs.set_state(PE_STENCIL_CONFIG, 0);
+		cs.set_state(PE_ALPHA_OP, 0); // alpha *test* off (distinct from blending)
+		// Constant-color blend factors are unsupported, so the blend color is
+		// always 0 -- see the BLEND_FUNC note in gpu_regs_3d.hh.
+		cs.set_state(PE_ALPHA_BLEND_COLOR, 0);
+	}
+
+	// --- PE blending + the OVERWRITE bit it forces off -----------------------
+	if (dirty & DirtyBlend) {
+		cs.set_state(PE_ALPHA_CONFIG, t.alpha_config);
+		cs.set_state(PE_COLOR_FORMAT, t.color_format);
+	}
+
+	// --- PE render target ----------------------------------------------------
+	if (dirty & DirtyFramebuffer) {
+		cs.set_state(PE_COLOR_STRIDE, d.rt_stride);
+		cs.set_state(PE_HDEPTH_CONTROL, 0);
+		cs.set_state_reloc(PE_PIPE_COLOR_ADDR0, {d.rt, static_cast<uint32_t>(RelocRead | RelocWrite), 0});
+	}
+
+	if (dirty & DirtyStatic) {
+		cs.set_state(PE_STENCIL_CONFIG_EXT, 0);
+		cs.set_state(PE_LOGIC_OP, PE_LOGIC_OP_COPY_SINGLEBUF);
+		// Dither stays off (all-ones). Mesa disables dithering whenever blending
+		// is on for cores without PE_DITHER_FIX, as the two together visibly
+		// shift colors; we never dither, so there is nothing to switch.
+		cs.set_state(PE_DITHER0, 0xFFFFFFFF);
+		cs.set_state(PE_DITHER1, 0xFFFFFFFF);
+		cs.set_state(PE_STENCIL_CONFIG_EXT2, 0);
+		cs.set_state(PE_MEM_CONFIG, 0);
+
+		// --- HALTI5 shader linkage: 1 smooth vec4 varying --------------------
+		cs.set_state(FE_HALTI5_ID_CONFIG, 0);
+		cs.set_state(VS_HALTI5_OUTPUT_COUNT, 0x2002);
+		cs.set_state(VS_HALTI5_UNK008A0, 0x0881000E);
+		cs.set_state(VS_HALTI5_OUTPUT0, 0x0302); // pos=t2, varying=t3
+		cs.set_state(VS_HALTI5_INPUT0, 0x0100);	 // attr0->t0, attr1->t1
+		cs.set_state(PA_VS_OUTPUT_COUNT, 2);
+		cs.set_state(PA_VARYING_NUM_COMPONENTS0, 4);
+		cs.set_state(PA_VARYING_NUM_COMPONENTS1, 0);
+		cs.set_state(PS_VARYING_NUM_COMPONENTS0, 4);
+		cs.set_state(PS_VARYING_NUM_COMPONENTS1, 0);
+		cs.set_state(GL_VARYING_TOTAL_COMPONENTS, 4);
+		cs.set_state(GL_HALTI5_SH_SPECIALS, 0x7F7F7F00);
+		cs.set_state(GL_HALTI5_SHADER_ATTRIBUTES0, 0);
+	}
+
+	// --- sync 2: shader/uniform registers are not self-synchronizing ---------
+	// From HALTI0 on, writing them while a draw is in flight corrupts that
+	// draw, so the FE must wait for the PE first. Only needed when we are about
+	// to write them -- which is what makes same-state draws stall-free.
+	const bool shader_state_changing = (dirty & (DirtyShaders | DirtyUniforms)) != 0;
+	if (shader_state_changing)
+		cs.stall(SYNC_RECIPIENT_FE, SYNC_RECIPIENT_PE);
+
+	// --- shader ICACHE upload ------------------------------------------------
+	if (dirty & DirtyShaders) {
+		cs.set_state(VS_NEWRANGE_LOW, 0);
+		cs.set_state(VS_HALTI5_RANGE_HIGH, d.vs_words / 4);
+		cs.set_state_reloc(VS_INST_ADDR, {d.vs, RelocRead, 0});
+		cs.set_state(SH_CONFIG, SH_CONFIG_RTNE);
+		cs.set_state(SH_ICACHE_CONTROL, SH_ICACHE_CONTROL_ENABLE);
+		cs.set_state(VS_ICACHE_COUNT, d.vs_words / 4 - 1);
+		cs.set_state(PS_NEWRANGE_LOW, 0);
+		cs.set_state(PS_HALTI5_RANGE_HIGH, d.ps_words / 4);
+		cs.set_state_reloc(PS_INST_ADDR, {d.ps, RelocRead, 0});
+		cs.set_state(SH_CONFIG, SH_CONFIG_RTNE);
+		cs.set_state(SH_ICACHE_CONTROL, SH_ICACHE_CONTROL_ENABLE);
+		cs.set_state(PS_ICACHE_COUNT, d.ps_words / 4 - 1);
+	}
+
+	// --- uniforms into the unified bank (VS u0.. at base 0) ------------------
+	// VS uniforms go through the MIRROR window (0x34000); 0x36000 is the PS
+	// stage's window (which is why the FS color uniform worked there).
+	// Uploading VS uniforms via the PS window leaves the VS reading zeros ->
+	// degenerate clip positions -> "draw runs clean, zero fragments, no faults".
+	if (shader_state_changing) {
+		cs.set_state(VS_UNIFORM_BASE, 0);
+		cs.set_state(PS_UNIFORM_BASE, static_cast<uint32_t>(d.uniforms.size() / 4)); // PS u0 after the VS's
+		if (!d.uniforms.empty()) {
+			cs.emit(cmd_load_state(SH_HALTI5_UNIFORMS_MIRROR0, static_cast<uint32_t>(d.uniforms.size())));
+			for (float f : d.uniforms)
+				cs.emit(fui(f));
+			cs.align();
+		}
+
+		// --- sync 3: HALTI5 must be prompted to pre-fetch shaders ------------
+		cs.set_state(VS_ICACHE_PREFETCH, 0);
+		cs.set_state(PS_ICACHE_PREFETCH, 0);
+		cs.stall(SYNC_RECIPIENT_RA, SYNC_RECIPIENT_PE);
+	}
+
+	// --- DRAW ----------------------------------------------------------------
 	// The count field is a VERTEX count regardless of primitive type; the
-	// hardware derives the primitive count itself.
+	// hardware derives the primitive count itself. No stall follows: the PE
+	// orders fragments to the same target itself, so draws pipeline.
 	cs.emit(FE_DRAW_INSTANCED | (static_cast<uint32_t>(d.prim) << 16) | 1);
 	cs.emit(d.vertex_count & 0x00FFFFFF);
 	cs.emit(0);
 	cs.emit(0);
 
-	cs.stall(SYNC_RECIPIENT_FE, SYNC_RECIPIENT_PE);
-	cs.flush_cache();
-	cs.stall(SYNC_RECIPIENT_FE, SYNC_RECIPIENT_PE);
+	cur_ = t;
+	uniform_count_ = static_cast<uint32_t>(d.uniforms.size());
+	uniforms_untracked_ = uniform_count_ > kMaxTrackedUniforms;
+	if (!uniforms_untracked_)
+		for (uint32_t i = 0; i < uniform_count_; i++)
+			uniforms_[i] = d.uniforms[i];
+	dirty_ = 0;
+	draws_++;
+	last_dwords_ = cs.offset() - start;
+	return true;
+}
+
+void Context::drain()
+{
+	cs_->stall(SYNC_RECIPIENT_FE, SYNC_RECIPIENT_PE);
+	cs_->flush_cache();
+	cs_->stall(SYNC_RECIPIENT_FE, SYNC_RECIPIENT_PE);
+}
+
+// Generalized mesh draw (see etna_3d.hh). A one-shot Context: everything is
+// dirty, so this emits the full state exactly as it always did, then drains.
+void emit_mesh(CmdStream &cs, const MeshDraw &d)
+{
+	Context ctx{cs};
+	ctx.draw(d);
+	ctx.drain();
 }
 
 } // namespace etna

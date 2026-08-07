@@ -411,6 +411,16 @@ Fence Gpu::submit(CmdStream &cs)
 	uint32_t op_dw = cs.offset();
 	uint32_t block_dw = op_dw + 6;
 
+	// A block that cannot fit even at the start of the ring would be copied
+	// past the end of the buffer -- silent memory corruption. Batched
+	// submissions (many draws in one stream, see etna_context.hh) are the way
+	// to hit this, so fail loudly and let the caller split the batch.
+	if (block_dw > ring_dwords_ - 4) {
+		print("etna: submission of ", block_dw, " dwords does not fit the ", ring_dwords_,
+			  "-dword ring -- split the batch into several submits\n");
+		return {};
+	}
+
 	// Wrap if it won't fit. Safe only because callers wait for completion (the
 	// FE is parked at the current tail, far from offset 0) before reusing the
 	// ring start. A real free-cursor would let us wrap while work is queued.

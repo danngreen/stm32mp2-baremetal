@@ -3,6 +3,8 @@
 #include "cube_scene.hh"
 #include "etna.hh"
 #include "etna_3d.hh"
+#include "etna_arena.hh"
+#include "etna_context.hh"
 #include "print/print.hh"
 #include <algorithm>
 #include <array>
@@ -1543,6 +1545,207 @@ bool depth_func_test(Gpu &gpu)
 	}
 
 	print("GPU honoured all six depth compare functions and the depth write mask. \\o/\n");
+	return true;
+}
+
+// =============================================================================
+//  Batched drawing with dirty-state tracking
+// =============================================================================
+//
+// Draws the same scene two ways and requires the results to be pixel-identical:
+//
+//   unbatched -- one emit_mesh + submit + wait per quad, which re-emits ~100
+//                registers, both shaders and four pipeline stalls every time
+//   batched   -- one Context over one command stream, so each draw after the
+//                first emits only what changed, then a single drain + submit
+//
+// It reports the dwords each draw emitted and the wall-clock for both paths, in
+// two workloads: same-state draws (colour carried in the vertex attributes,
+// the shape a GL front end would produce) and uniform-changing draws (a
+// per-draw transform, like the cube demo). The second is expected to stay
+// slower per draw: changing uniforms means writing shader state, and HALTI5
+// shader state is not self-synchronizing, so it costs an FE->PE stall. That is
+// correct behaviour, not a regression -- it is the reason the Processing fast
+// path wants a constant transform and per-vertex colour.
+//
+// NOTE the arena. Each draw in a batch needs its own vertex memory: the FE
+// reads vertex buffers asynchronously until the fence, so reusing one buffer
+// across batched draws races the GPU. See etna_arena.hh.
+bool batch_test(Gpu &gpu)
+{
+	constexpr uint32_t NQuads = 24;
+	constexpr uint32_t VertsPerQuad = 6;
+	constexpr uint32_t FloatsPerQuad = VertsPerQuad * 7;
+
+	StateTarget t;
+	if (!t.init(gpu, 8, false))
+		return false;
+
+	etna::Arena arena;
+	if (!arena.init(gpu, 64 * 1024)) {
+		print("FAILED: could not allocate the vertex arena\n");
+		return false;
+	}
+
+	// A grid of small quads, each a different colour so a mis-ordered or
+	// dropped draw shows up as a pixel difference rather than by luck.
+	auto quad_i = [](uint32_t i) {
+		const uint32_t col = i % 6, row = i / 6;
+		const float w = 2.0f / 6.0f, h = 2.0f / 4.0f;
+		const float x0 = -1.0f + col * w + 0.02f, x1 = x0 + w - 0.04f;
+		const float y0 = -1.0f + row * h + 0.02f, y1 = y0 + h - 0.04f;
+		// Kept well away from 0 so no quad is black-on-black against the clear
+		// colour -- an invisible quad would silently weaken the comparison.
+		const float r = float(40 + (i * 37) % 200) / 255.0f;
+		const float g = float(40 + (i * 91) % 200) / 255.0f;
+		const float b = float(40 + (i * 53) % 200) / 255.0f;
+		return quad_tris(x0, y0, x1, y1, 0.5f, r, g, b);
+	};
+
+	// Snapshot the resolved image so the two paths can be compared exactly.
+	static std::array<uint32_t, StateTarget::W * StateTarget::H> ref;
+
+	// --- path A: one submit per draw -----------------------------------------
+	arena.reset();
+	t.begin();
+	auto t0 = read_cntpct();
+	for (uint32_t i = 0; i < NQuads; i++) {
+		const auto v = quad_i(i);
+		Bo vb = arena.upload(std::span<const float>(v.data(), FloatsPerQuad));
+		if (!vb) {
+			print("FAILED: vertex arena exhausted\n");
+			return false;
+		}
+		auto d = t.base();
+		d.vtx = &vb;
+		d.vertex_count = VertsPerQuad;
+		auto cs = gpu.new_cmd_stream(1024);
+		etna::emit_mesh(cs, d);
+		if (!gpu.submit_and_wait(cs)) {
+			gpu.dump_status("unbatched draw");
+			return false;
+		}
+	}
+	const uint32_t unbatched_ticks = uint32_t(read_cntpct() - t0);
+	auto s_unbatched = t.finish();
+	if (!s_unbatched.ok)
+		return false;
+	std::ranges::copy(t.lin.span<const uint32_t>(), ref.begin());
+
+	// --- path B: one Context, one submit -------------------------------------
+	// Bos must outlive the submit, so the slices are held for the whole batch.
+	std::array<Bo, NQuads> vbs{};
+	arena.reset();
+	t.begin();
+	auto t1 = read_cntpct();
+	auto cs = gpu.new_cmd_stream(2048);
+	etna::Context ctx{cs};
+	uint32_t first_dwords = 0, later_dwords = 0;
+	for (uint32_t i = 0; i < NQuads; i++) {
+		const auto v = quad_i(i);
+		vbs[i] = arena.upload(std::span<const float>(v.data(), FloatsPerQuad));
+		if (!vbs[i]) {
+			print("FAILED: vertex arena exhausted\n");
+			return false;
+		}
+		auto d = t.base();
+		d.vtx = &vbs[i];
+		d.vertex_count = VertsPerQuad;
+		if (!ctx.draw(d)) {
+			print("FAILED: command stream full after ", i, " batched draws\n");
+			return false;
+		}
+		if (i == 0)
+			first_dwords = ctx.last_draw_dwords();
+		else if (i == 1)
+			later_dwords = ctx.last_draw_dwords();
+	}
+	ctx.drain();
+	if (!gpu.submit_and_wait(cs)) {
+		gpu.dump_status("batched draw");
+		return false;
+	}
+	const uint32_t batched_ticks = uint32_t(read_cntpct() - t1);
+	auto s_batched = t.finish();
+	if (!s_batched.ok)
+		return false;
+
+	print("batching (", NQuads, " same-state quads):\n");
+	print("  per-draw dwords: first ", first_dwords, ", subsequent ", later_dwords, "\n");
+	print("  total stream ", cs.offset(), " dwords for ", ctx.draw_count(), " draws\n");
+	print("  unbatched ", unbatched_ticks, " ticks (", NQuads, " submits), batched ", batched_ticks,
+		  " ticks (1 submit)");
+	if (batched_ticks)
+		print(" -- ", (unbatched_ticks * 10 / batched_ticks) / 10, ".",
+			  (unbatched_ticks * 10 / batched_ticks) % 10, "x");
+	print("\n");
+
+	// Same geometry, same state, same order -> the images must match exactly.
+	uint32_t diffs = 0;
+	auto got = t.lin.span<const uint32_t>();
+	for (uint32_t i = 0; i < StateTarget::W * StateTarget::H; i++)
+		if (got[i] != ref[i])
+			diffs++;
+	if (diffs) {
+		print("FAILED: batched render differs from unbatched in ", diffs, " pixels\n");
+		return false;
+	}
+	if (s_batched.drawn == 0 || s_batched.drawn != s_unbatched.drawn) {
+		print("FAILED: batched drew ", s_batched.drawn, " px, unbatched ", s_unbatched.drawn, "\n");
+		return false;
+	}
+	// The whole point: a repeat draw must not re-emit the pipe.
+	if (later_dwords >= first_dwords) {
+		print("FAILED: a same-state repeat draw emitted ", later_dwords, " dwords, no better than the first (",
+			  first_dwords, ")\n");
+		return false;
+	}
+
+	// --- uniform-changing workload -------------------------------------------
+	// Every draw carries a different transform, so shader state changes and the
+	// FE->PE stall is unavoidable. Reported for contrast, not asserted against.
+	{
+		std::array<Bo, NQuads> uvbs{};
+		arena.reset();
+		t.begin();
+		auto cs2 = gpu.new_cmd_stream(4032);
+		etna::Context uctx{cs2};
+		std::array<float, 16> mvp{};
+		uint32_t u_first = 0, u_later = 0;
+		auto t2 = read_cntpct();
+		for (uint32_t i = 0; i < NQuads; i++) {
+			const auto v = quad_i(i);
+			uvbs[i] = arena.upload(std::span<const float>(v.data(), FloatsPerQuad));
+			if (!uvbs[i])
+				return false;
+			// Identity with a per-draw nudge, so the uniform genuinely differs.
+			mvp = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, float(i) * 0.001f, 0, 0, 1};
+			auto d = t.base();
+			d.vtx = &uvbs[i];
+			d.vertex_count = VertsPerQuad;
+			// The pass-through VS ignores the uniform bank; what is being
+			// measured here is the cost of writing it, not its effect.
+			d.uniforms = mvp;
+			if (!uctx.draw(d)) {
+				print("FAILED: command stream full during the uniform batch at draw ", i, "\n");
+				return false;
+			}
+			if (i == 0)
+				u_first = uctx.last_draw_dwords();
+			else if (i == 1)
+				u_later = uctx.last_draw_dwords();
+		}
+		uctx.drain();
+		if (!gpu.submit_and_wait(cs2)) {
+			gpu.dump_status("uniform batch");
+			return false;
+		}
+		const uint32_t u_ticks = uint32_t(read_cntpct() - t2);
+		print("  uniform-changing batch: per-draw dwords first ", u_first, ", subsequent ", u_later, "; ",
+			  u_ticks, " ticks (each draw costs an FE->PE stall -- expected)\n");
+	}
+
+	print("GPU batched ", NQuads, " draws into one submission, pixel-identical to per-draw submits. \\o/\n");
 	return true;
 }
 

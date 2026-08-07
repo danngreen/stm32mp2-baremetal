@@ -200,6 +200,11 @@ The tests are:
   under each compare function, so the surviving colour reads out the function
   directly. Then `glDepthMask`: a z=0.3 draw with writes off must change the
   colour but not the buffer, proven by a following z=0.4 draw still passing.
+- batch_test(): draws the same 24-quad scene twice -- once as 24 emit_mesh
+  submits, once as one `Context` batch in a single submission -- and requires
+  the two images to be pixel-identical. Reports the dwords each draw emitted
+  (first vs. subsequent) and the wall-clock for both paths, for same-state and
+  uniform-changing workloads.
 
 
 ### Alpha blending
@@ -320,6 +325,69 @@ nor discards, render target not linear), and rnndb warns that the late stage
 must be disabled when early writes are active "otherwise the GPU hangs". Our
 `RA_EARLY_DEPTH` value is the late-Z one the depth test was verified with;
 revisit only with a hardware test.
+
+
+### Batching and dirty-state emission
+
+`emit_mesh()` is self-contained: every call re-emits ~100 state registers, both
+shader programs, the uniforms, and four pipeline stalls, then drains the pixel
+engine. That is right for one draw per submission, and it is what the tests
+above use — but it is roughly 250 dwords and several full pipeline drains per
+draw. Fine for twelve cubes; hopeless for a sketch drawing a thousand shapes.
+
+`etna::Context` (`etna_context.hh`) remembers the state it last emitted. Each
+draw diffs against it and emits only the register blocks whose group changed —
+and, the part that actually matters, emits a pipeline sync **only when the state
+it guards has changed**. Ported from Mesa's `etna_emit_state()`, whose three
+sync points are the complete list:
+
+1. cache flush + `RA->PE` stall, before changing framebuffer/blend/depth state
+   (the caches still hold pixels rendered with the *old* state)
+2. `FE->PE` stall, before loading shader/uniform state — from HALTI0 on those
+   registers are **not self-synchronizing**, so writing them while a draw is in
+   flight corrupts it
+3. ICACHE prefetch + `RA->PE` stall, closing the shader/uniform block
+
+There is deliberately no sync *between* draws: the PE orders fragments to the
+same render target itself, which is why Mesa emits draws back to back. The
+stall/flush/stall drain is a per-**submission** cost and lives in `drain()`.
+
+```cpp
+Context ctx{cs};
+for (auto &d : draws) ctx.draw(d);   // deltas only
+ctx.drain();                         // once
+gpu.submit_and_wait(cs);
+```
+
+`emit_mesh()` is now just a one-shot Context — `draw()` then `drain()` — so
+there is a single implementation, and the first draw of any Context emits
+exactly the register sequence, in the same order, that the pipe emitted before
+dirty tracking existed. The five hardware-verified 3D tests all go through
+`emit_mesh`, so they are the regression suite for the full-emit path.
+
+**The vertex arena is not optional.** With one draw per submission you can
+upload vertices into one buffer, submit, and wait — the GPU is done before the
+CPU touches it again. As soon as several draws share a submission that stops
+being true: the FE reads vertex buffers asynchronously right up until the fence,
+so re-uploading into the same buffer between batched draws races the GPU and
+renders nondeterministic garbage. `etna::Arena` (`etna_arena.hh`) hands out
+non-overlapping slices of a pool and is reset only after the fence.
+
+Two other sharp edges worth knowing:
+
+- **Ring capacity.** A batch is one big submission, and the WAIT/LINK ring is
+  4096 dwords. `Gpu::submit()` previously wrapped by resetting the head, which
+  for an oversized block would have copied past the end of the ring — silent
+  memory corruption. It now refuses and says so.
+- **Context staleness.** Context tracks what *it* emitted. RS clears, blits and
+  resolves don't touch 3D state, so they interleave freely; anything else that
+  reprograms the pipe behind its back (a PPU compute dispatch does) must be
+  followed by `invalidate()`.
+
+One expected non-win: changing uniforms per draw means writing shader state,
+which costs the `FE->PE` stall every time. That is correct, not a regression —
+and it is exactly why the Processing fast path wants a constant transform with
+colour in the vertex attributes rather than a per-draw MVP uniform.
 
 
 ### Spinning cube
@@ -496,6 +564,12 @@ depth compare functions (red at z=0.5, then green at z=0.7):
   GEQUAL   : got 0xFF00FF00 expect 0xFF00FF00  ok
   depth mask: after z=0.3 (write off) then z=0.4, centre is 0xFF0000FF expect 0xFF0000FF
 GPU honoured all six depth compare functions and the depth write mask. \o/
+batching (24 same-state quads):
+  per-draw dwords: first NNN, subsequent NNN
+  total stream NNN dwords for 24 draws
+  unbatched NNN ticks (24 submits), batched NNN ticks (1 submit) -- N.Nx
+  uniform-changing batch: per-draw dwords first NNN, subsequent NNN; NNN ticks (each draw costs an FE->PE stall -- expected)
+GPU batched 24 draws into one submission, pixel-identical to per-draw submits. \o/
 cube frame 0: 658 px drawn, 0 mismatches (562 edge px ignored)
 cube frame 1: 761 px drawn, 0 mismatches (687 edge px ignored)
 cube frame 2: 721 px drawn, 0 mismatches (613 edge px ignored)
