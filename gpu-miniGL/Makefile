@@ -60,7 +60,10 @@ INCLUDES += -I$(SHAREDDIR)/STM32MP2xx_HAL_Driver/Inc
 INCLUDES += -I$(BUILDDIR) # for the generated pde_prototypes.hh
 
 EXTRA_ARCH_CFLAGS := -DUSE_HAL_DRIVER
-EXTRA_ARCH_CFLAGS += -DPSKETCH_DEMO=\"$(DEMO)\"
+
+# A sketch folder's several .pde "tabs" are one translation unit (see
+# sketch_pde.cc), so all of them are inputs to the generated headers.
+DEMO_PDES := $(wildcard $(dir $(DEMO))*.pde)
 
 OPTFLAG := -O2
 
@@ -72,11 +75,11 @@ CONFIG_STAMP_VALS += $(subst /,-,$(DEMO))
 
 include $(SHAREDDIR)/makefile-common.mk
 
-# Forward declarations for the sketch's functions -- Java ignores definition
-# order, C++ does not. Regenerated when the .pde or the generator changes, and
-# (via the config stamp) when a different DEMO is selected.
-$(BUILDDIR)/pde_prototypes.hh: $(DEMO) tools/pde_prototypes.py $(CONFIG_STAMP)
+# Forward declarations + the ordered .pde include list. Regenerated when any
+# .pde in the sketch folder or the generator changes, and (via the config
+# stamp) when a different DEMO is selected.
+$(BUILDDIR)/pde_prototypes.hh $(BUILDDIR)/pde_includes.hh: $(DEMO_PDES) tools/pde_prototypes.py $(CONFIG_STAMP)
 	@mkdir -p $(BUILDDIR)
-	python3 tools/pde_prototypes.py $(DEMO) $@
+	python3 tools/pde_prototypes.py $(DEMO) $(BUILDDIR)/pde_prototypes.hh $(BUILDDIR)/pde_includes.hh
 
-$(OBJDIR)/sketch_pde.o: $(BUILDDIR)/pde_prototypes.hh
+$(OBJDIR)/sketch_pde.o: $(BUILDDIR)/pde_prototypes.hh $(BUILDDIR)/pde_includes.hh
