@@ -90,6 +90,14 @@ Also verified on hardware, all vsync-locked at 58 fps unless noted:
   Recursion, Rotate, Tree, Wolfram, Brownian. Brownian's 2000 per-segment
   stroke colors still batch into **one** draw: deferred strokes carry color
   per segment, since color is a vertex attribute, not pipeline state.
+- **third sweep** (class hoisting / `color` type / bezier) — Array,
+  Array_2D, Array_Objects, Additive_Wave, Arctangent, Polar_to_Cartesian,
+  Sine_Wave, Linear_Interpolation, Distance_2D, Objects, Composite_Objects,
+  Inheritance, Arm, Coordinates, Hue, Easing, Penrose_Snowflake,
+  ArrayList_of_objects, Button, Reflection1. Everything at 58 fps except
+  three that are honest about their own cost: Additive_Wave (its own
+  `frameRate(30)`), Distance_2D (46 fps, a 22-draw grid) and Array (34 fps,
+  ~2160 line segments a frame — the CPU vertex path, see TODO.md).
 - **second sweep** (PVector / noise / arc) — Flocking (300 draws/frame),
   Simple_Particle_System, Multiple_Particle_Systems, Forces_With_Vectors,
   Acceleration_With_Vectors, Bouncing_Ball, Vector_Math, Circle_Collision,
@@ -112,10 +120,19 @@ does, and `sketch_pde.cc` includes its output:
    or a value member must already be complete. (Flocking's `Boid` before
    `Flock`; Multiple_Particle_Systems' `Particle` before `Crazy_Particle`,
    which alphabetical order would get wrong.)
-3. **Static mode.** A sketch that is only a list of statements with no
-   `setup()`/`draw()` at all — Shape_Primitives, Points_and_Lines, most of
-   `Basics/control` — is wrapped into a `setup()` body. It draws once and the
-   render target persists, so the image stays up with 0 draws per frame.
+3. **Hoisted class definitions.** A sketch will happily call
+   `new EggRing(...)` inside `setup()` and define `EggRing` at the bottom of
+   the file. Class and struct bodies are lifted above the functions (brace
+   matching that skips comments and literals), so the definition is in scope.
+4. **Static mode.** A sketch that is only a list of statements with no
+   `setup()`/`draw()` at all — Shape_Primitives, Points_and_Lines,
+   Coordinates, most of `Basics/control` — is wrapped into a `setup()` body.
+   It draws once and the render target persists, so the image stays up with
+   0 draws per frame.
+
+The body is emitted as one generated file rather than a chain of includes,
+with `#line` directives so compiler errors still point into the original
+`.pde` at the original line.
 
 The `.pde` files themselves stay untouched, provided they are C++-compatible
 Processing code (the examples largely are; `fmod` instead of `%` on floats is
@@ -137,11 +154,22 @@ semantics rather than tidier C++ ones:
 - **`Array<T>`** — a fixed-size Java array. Its `.length` answers to both
   `a.length` and `a.length()`, since the corpus uses both spellings.
 
-Processing's `circle()`/`square()` shorthands are deliberately absent: they
-are just `ellipse()`/`rect()` with equal dimensions, and as free functions
-they collide with the sketch variables of the same name (Morph declares
-`ArrayList<PVector> circle`) — Java keeps method and field namespaces apart,
-C++ does not.
+**`color`** is the same collision from the other side: Processing uses it as
+both a type (`color c1, c2;`) and a constructor-like function
+(`color(0, 200, 0)`), which Java's separate namespaces allow. Here it is a
+type whose constructors read exactly like the calls and which converts
+implicitly to the packed `0xAARRGGBB` int that `fill()`/`stroke()` take.
+
+Processing's `circle()`/`square()` shorthands are deliberately absent for the
+same reason: they are just `ellipse()`/`rect()` with equal dimensions, and as
+free functions they collide with the sketch variables of the same name (Morph
+declares `ArrayList<PVector> circle`).
+
+The math wrappers (`sqrt`, `sin`, `atan2`, `pow`, …) are templates rather
+than `float` overloads: a sketch writing `atan2(y - 5, x - 3)` on ints would
+otherwise be ambiguous against `<cmath>`'s float and double versions. A
+template loses to an exact non-template match, so genuine float and double
+calls still go straight to libm.
 
 ## Dynamic memory
 

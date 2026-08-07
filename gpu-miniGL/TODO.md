@@ -66,7 +66,8 @@ size into a smaller buffer and upscale.
   console synthesises a click. A real pointer needs an input device (USB HID?
   encoder?). Key events already work over the console UART.
 - `PShape` / `loadShape`, `createGraphics` (FBOs, cheap — see gpu/ M4),
-  `bezier()`/`curve()`, `PImage`-based `filter()`.
+  `PImage`-based `filter()`. `bezier()`/`bezierVertex()` are done;
+  `curve()`/`curveVertex()` (Catmull-Rom) are not.
 - 3D: `box()`, `sphere()`, `camera()`, `lights()`. The pipe has depth and a
   real 3D path (gpu/'s spinning cube), so this is psketch-side work plus a
   lighting shader.
