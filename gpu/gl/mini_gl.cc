@@ -57,6 +57,10 @@ struct State {
 	std::array<Mat4, kMaxStack> modelview{};
 	std::array<Mat4, kMaxStack> projection{};
 	uint32_t mv_depth = 0, proj_depth = 0;
+	// Combined projection*modelview, rebuilt lazily: the unlit vertex path is
+	// one matrix multiply instead of two, which matters at 500k verts/frame.
+	Mat4 mvp{};
+	bool mvp_dirty = true;
 
 	// --- immediate mode ---
 	bool in_begin = false;
@@ -110,6 +114,10 @@ void set_error(GLenum e)
 
 Mat4 &current_matrix()
 {
+	// Every matrix mutator funnels through here for its target, so this is
+	// where the cached mvp is invalidated. (Conservative: read-only callers
+	// dirty it too, which only costs a rebuild.)
+	g.mvp_dirty = true;
 	return g.matrix_mode == GL_PROJECTION ? g.projection[g.proj_depth] : g.modelview[g.mv_depth];
 }
 
@@ -303,18 +311,27 @@ void emit_vertex(float x, float y, float z)
 	const Mat4 &mv = g.modelview[g.mv_depth];
 	const Mat4 &pr = g.projection[g.proj_depth];
 
-	const Vec4 eye = mv * Vec4{x, y, z, 1.0f};
-	Vec4 clip = pr * eye;
+	std::array<float, 4> color = g.cur_color;
+	Vec4 clip;
+	if (g.lighting) {
+		// Lighting needs the eye-space position anyway, so transform in two
+		// steps as before.
+		const Vec4 eye = mv * Vec4{x, y, z, 1.0f};
+		clip = pr * eye;
+		Vec4 n = mv.transform_dir(g.cur_normal[0], g.cur_normal[1], g.cur_normal[2]);
+		color = lit_color(eye, n);
+	} else {
+		// Hot path: one cached projection*modelview multiply per vertex.
+		if (g.mvp_dirty) {
+			g.mvp = pr * mv;
+			g.mvp_dirty = false;
+		}
+		clip = g.mvp * Vec4{x, y, z, 1.0f};
+	}
 
 	// THE Y FLIP -- see the file header. GL's viewport origin is bottom-left;
 	// ours is top-left, so clip-space Y is negated exactly once, here.
 	clip.y = -clip.y;
-
-	std::array<float, 4> color = g.cur_color;
-	if (g.lighting) {
-		Vec4 n = mv.transform_dir(g.cur_normal[0], g.cur_normal[1], g.cur_normal[2]);
-		color = lit_color(eye, n);
-	}
 
 	float *v = g_begin_buf.data() + g.begin_count * kFloatsPerVertex;
 	v[0] = clip.x;
@@ -500,6 +517,7 @@ void glPopMatrix()
 		}
 		g.mv_depth--;
 	}
+	g.mvp_dirty = true; // the top matrix changed without current_matrix()
 }
 
 void glLoadMatrixf(const GLfloat *m)
