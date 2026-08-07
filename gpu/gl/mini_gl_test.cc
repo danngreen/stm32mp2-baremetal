@@ -393,6 +393,25 @@ void test_batching(RecordBackend &be)
 	glClear(GL_COLOR_BUFFER_BIT);
 	mglEndFrame();
 	check(be.draws.size() == 1 && be.clears.size() == 1, "glClear flushes the pending batch first");
+
+	// A frame with more same-state geometry than one batch buffer holds (4096
+	// verts) must SPLIT into multiple draws, not drop geometry or flag an
+	// error. 60 fans of 40 verts convert to 60 * 114 = 6840 triangle verts.
+	be.reset();
+	mglBeginFrame();
+	for (int f = 0; f < 60; f++) {
+		glBegin(GL_TRIANGLE_FAN);
+		for (int i = 0; i < 40; i++)
+			glVertex2f(float(i), float(f));
+		glEnd();
+	}
+	mglEndFrame();
+	uint32_t total = 0;
+	for (const auto &d : be.draws)
+		total += d.count;
+	check(be.draws.size() == 2, "an over-full frame splits into 2 batches");
+	check(total == 60 * 114, "the split keeps every vertex (60 fans x 114)");
+	check(glGetError() == GL_NO_ERROR, "the split raises no GL error");
 }
 
 // -----------------------------------------------------------------------------

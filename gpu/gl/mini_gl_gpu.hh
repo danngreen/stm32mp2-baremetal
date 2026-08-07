@@ -56,6 +56,16 @@ public:
 		return w_ * 4;
 	}
 
+	// Resolve the NEXT end_frame() into an external linear buffer instead of
+	// framebuffer() -- for double-buffered scanout, point this at the back
+	// buffer each frame. `stride` 0 means w*4; nullptr reverts to the internal
+	// buffer. The Bo must outlive the frame (the GPU reads/writes it async).
+	void set_scanout(etna::Bo *fb, uint32_t stride = 0)
+	{
+		scanout_ = fb;
+		scanout_stride_ = stride;
+	}
+
 	// Diagnostics for the frame just ended.
 	uint32_t draws_submitted() const
 	{
@@ -81,10 +91,14 @@ private:
 	bool has_depth_ = false;
 
 	etna::Bo rt_{}, depth_{}, fb_{}, vs_{}, ps_{};
+	etna::Bo *scanout_ = nullptr;
+	uint32_t scanout_stride_ = 0;
 	etna::Arena arena_{};
 	uint32_t stream_words_ = 0;
 
-	// Live only between begin_frame() and end_frame().
+	// cs_ is constructed once in init() and reset() between uses -- the GPU
+	// pool cannot free, so per-frame stream allocation would leak it dry.
+	// ctx_ is live only between begin_frame() and end_frame().
 	etna::CmdStream *cs_ = nullptr;
 	etna::Context *ctx_ = nullptr;
 	alignas(etna::CmdStream) unsigned char cs_storage_[sizeof(etna::CmdStream)]{};

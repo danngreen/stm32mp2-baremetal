@@ -578,7 +578,17 @@ void glEnd()
 	if (n == 0)
 		return;
 
-	want_batch(current_batch_state(g.begin_mode));
+	const BatchState bs = current_batch_state(g.begin_mode);
+	want_batch(bs);
+	// A glBegin/glEnd block is never split across batches (that would tear a
+	// primitive), so if this block's worst-case expansion (3 output verts per
+	// input vert, the TRIANGLE_STRIP/FAN bound) cannot fit in what remains of
+	// the open batch, hand the batch to the backend and start a fresh one.
+	// Only a single block bigger than the whole buffer still overflows.
+	if (g.batch_count + 3 * n > kMaxBatchVerts) {
+		flush_batch();
+		want_batch(bs);
+	}
 	convert_and_append(g.begin_mode, n);
 }
 

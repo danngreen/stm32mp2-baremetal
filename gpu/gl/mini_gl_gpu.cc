@@ -130,6 +130,15 @@ bool GpuBackend::init(etna::Gpu &gpu, uint32_t w, uint32_t h, bool with_depth, u
 	vs_.cpu_fini(etna::RelocWrite);
 	std::ranges::copy(kPsPassthrough, ps_.span<uint32_t>().begin());
 	ps_.cpu_fini(etna::RelocWrite);
+
+	// ONE command stream for the backend's whole life, reset() between uses.
+	// The GPU pool is a bump allocator with no free, so allocating a stream
+	// per frame (as this originally did) exhausts the pool in ~4000 frames --
+	// about 70 seconds of a 58 fps sketch. submit_and_wait() copies the stream
+	// into the ring, so the backing Bo is reusable the moment it returns.
+	cs_ = new (cs_storage_) etna::CmdStream(gpu.new_cmd_stream(stream_words));
+	if (!cs_->bo())
+		return false;
 	return true;
 }
 
@@ -139,13 +148,15 @@ void GpuBackend::begin_frame()
 	draws_ = 0;
 	stream_dwords_ = 0;
 	overflow_ = false;
-	cs_ = new (cs_storage_) etna::CmdStream(gpu_->new_cmd_stream(stream_words_));
+	cs_->reset();
+	if (ctx_)
+		ctx_->~Context();
 	ctx_ = new (ctx_storage_) etna::Context(*cs_);
 }
 
 bool GpuBackend::flush_stream()
 {
-	if (!cs_ || !ctx_)
+	if (!ctx_)
 		return false;
 	ctx_->drain();
 	stream_dwords_ += cs_->offset();
@@ -153,17 +164,16 @@ bool GpuBackend::flush_stream()
 	if (!ok)
 		gpu_->dump_status("mini-gl submit");
 	ctx_->~Context();
-	cs_->~CmdStream();
-	// A fresh stream; the pipe state is unchanged, but the new Context has not
-	// emitted anything yet, so it will re-emit the full state on its first draw.
-	cs_ = new (cs_storage_) etna::CmdStream(gpu_->new_cmd_stream(stream_words_));
+	// Same stream, reset; the pipe state is unchanged, but the new Context has
+	// not emitted anything yet, so it re-emits the full state on its next draw.
+	cs_->reset();
 	ctx_ = new (ctx_storage_) etna::Context(*cs_);
 	return ok;
 }
 
 void GpuBackend::clear(uint32_t mask, float r, float g, float b, float a, float)
 {
-	if (!cs_)
+	if (!ctx_)
 		return;
 
 	// The RS clear brings its own PE drain, so anything already batched must be
@@ -202,7 +212,7 @@ void GpuBackend::clear(uint32_t mask, float r, float g, float b, float a, float)
 
 void GpuBackend::draw(const BatchState &s, std::span<const float> verts, uint32_t vertex_count)
 {
-	if (!cs_ || vertex_count == 0)
+	if (!ctx_ || vertex_count == 0)
 		return;
 
 	etna::Bo vb = arena_.upload(verts);
@@ -289,7 +299,7 @@ void GpuBackend::draw(const BatchState &s, std::span<const float> verts, uint32_
 
 void GpuBackend::end_frame()
 {
-	if (!cs_ || !ctx_)
+	if (!ctx_)
 		return;
 
 	if (draws_ > 0)
@@ -297,16 +307,19 @@ void GpuBackend::end_frame()
 	else
 		stream_dwords_ += cs_->offset();
 
-	// Untile into the linear framebuffer a display controller can scan out.
+	// Untile into the linear framebuffer a display controller can scan out --
+	// either the internal one or, when set_scanout() was called, an external
+	// (e.g. LTDC back) buffer.
+	etna::Bo &dst = scanout_ ? *scanout_ : fb_;
+	const uint32_t dst_stride = (scanout_ && scanout_stride_) ? scanout_stride_ : w_ * 4;
 	cs_->reset();
-	etna::resolve(*cs_, fb_, rt_, w_, h_, pw_ * 4, w_ * 4);
+	etna::resolve(*cs_, dst, rt_, w_, h_, pw_ * 4, dst_stride);
 	if (!gpu_->submit_and_wait(*cs_))
 		gpu_->dump_status("mini-gl resolve");
 
+	// cs_ lives on (see init); only the Context is per-frame.
 	ctx_->~Context();
-	cs_->~CmdStream();
 	ctx_ = nullptr;
-	cs_ = nullptr;
 }
 
 } // namespace mgl
