@@ -42,4 +42,6 @@ EXTRA_ARCH_CFLAGS := -DUSE_HAL_DRIVER
 
 OPTFLAG := -O2
 
+FREESTANDING := 
+
 include $(SHAREDDIR)/makefile-common.mk
