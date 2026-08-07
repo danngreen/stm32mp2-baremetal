@@ -53,6 +53,15 @@ void panic()
 static void poll_keys()
 {
 	for (int c; (c = uart_getchar()) >= 0;) {
+		// Enter stands in for a mouse click at the cursor (screen centre)
+		// until there is a real pointer -- enough to reach the content of the
+		// many examples that are gated behind mousePressed().
+		if (c == '\r' || c == '\n') {
+			print("(synthetic click at ", mouseX, ",", mouseY, ")\n");
+			_mousePressed = true;
+			mousePressed();
+			continue;
+		}
 		key = char(c);
 		keyCode = c;
 		_keyPressed = true;
@@ -148,8 +157,22 @@ int main()
 		sketch_draw();
 		psk_frame_end(); // deferred strokes go out here
 		mglEndFrame();
+
+		// updatePixels(): the sketch's own pixel array, straight into the
+		// buffer about to be scanned out -- after the resolve, so it wins.
+		if (const int *px = psk_take_pixels()) {
+			auto dst = fbs[cur].span<uint32_t>();
+			std::copy_n(reinterpret_cast<const uint32_t *>(px), size_t(HActive) * VActive, dst.begin());
+			fbs[cur].cpu_fini(etna::RelocWrite);
+		}
 		frameCount++;
-		_keyPressed = false; // the "held" boolean lasts one frame per received byte
+		// The "held" booleans last one frame per event: a serial console has
+		// no key-up or button-up to end them.
+		_keyPressed = false;
+		if (_mousePressed) {
+			_mousePressed = false;
+			mouseReleased();
+		}
 
 		if (be.overflowed()) {
 			print("FAILED: backend out of arena or command stream\n");
@@ -171,14 +194,21 @@ int main()
 		if (frames == 0)
 			print("first frame: ", render_us, " us, ", be.draws_submitted(), " draw(s), ", be.stream_dwords(),
 				  " dwords\n");
+		frames++;
 
-		if (++frames % 120 == 0) {
-			const auto now = read_cntpct();
-			const uint32_t us = (now - t0) * 1000 / 120 / tick_khz;
-			print(us ? (1000000 + us / 2) / us : 0, " fps, worst render ", worst_us, " us, ", be.draws_submitted(),
-				  " draw(s), ", be.stream_dwords(), " dwords\n");
+		// Report on a TIME interval, not a frame count: a sketch rendering at
+		// 1 fps would otherwise take two minutes to say anything, which reads
+		// as a hang. Average frame time is the honest number at any speed --
+		// fps alone rounds to 0 below one frame a second.
+		const auto now = read_cntpct();
+		const uint32_t elapsed_us = (now - t0) * 1000 / tick_khz;
+		if (elapsed_us >= 2000000) {
+			const uint32_t avg_us = elapsed_us / frames;
+			print(avg_us ? (1000000 + avg_us / 2) / avg_us : 0, " fps (avg ", avg_us, " us/frame, worst render ",
+				  worst_us, " us), ", be.draws_submitted(), " draw(s), ", be.stream_dwords(), " dwords\n");
 			t0 = now;
 			worst_us = 0;
+			frames = 0;
 		}
 	}
 }
