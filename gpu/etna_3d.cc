@@ -707,22 +707,27 @@ void emit_mesh(CmdStream &cs, const MeshDraw &d)
 	cs.set_state(PA_SYSTEM_MODE, 0x1);
 	cs.set_state(PA_ATTRIBUTE_ELEMENT_COUNT, 1); // 1 varying
 	// Adds WIDE_LINE for line primitives -- without it they draw nothing at
-	// all on this core. See etna_prim.hh.
-	cs.set_state(PA_CONFIG, pa_config(d.prim));
+	// all on this core (etna_prim.hh) -- plus the cull mode (etna_raster.hh).
+	cs.set_state(PA_CONFIG, pa_config(d.prim) | cull_bits(d.cull, d.front_face));
 	// Consulted only when PA_CONFIG.WIDE_LINE is set; same value as PA_LINE_WIDTH.
 	cs.set_state(PA_WIDE_LINE_WIDTH0, half_line);
 	cs.set_state(PA_WIDE_LINE_WIDTH1, half_line);
 
 	// --- SE scissor + clip ------------------------------------------------------
-	set_state_fixp(cs, SE_SCISSOR_LEFT, 0);
-	set_state_fixp(cs, SE_SCISSOR_TOP, 0);
-	set_state_fixp(cs, SE_SCISSOR_RIGHT, (d.width << 16) + SE_SCISSOR_MARGIN_RIGHT);
-	set_state_fixp(cs, SE_SCISSOR_BOTTOM, (d.height << 16) + SE_SCISSOR_MARGIN_BOTTOM);
+	// A disabled scissor resolves to the whole target, reproducing the fixed
+	// full-target rect this used to emit. maxx/maxy are exclusive. Mesa emits
+	// no CLIP_LEFT/TOP -- the clip rect's origin is implicitly 0 and only the
+	// scissor carries the min corner.
+	const Scissor sc = d.scissor.resolved(d.width, d.height);
+	set_state_fixp(cs, SE_SCISSOR_LEFT, sc.minx << 16);
+	set_state_fixp(cs, SE_SCISSOR_TOP, sc.miny << 16);
+	set_state_fixp(cs, SE_SCISSOR_RIGHT, (sc.maxx << 16) + SE_SCISSOR_MARGIN_RIGHT);
+	set_state_fixp(cs, SE_SCISSOR_BOTTOM, (sc.maxy << 16) + SE_SCISSOR_MARGIN_BOTTOM);
 	cs.set_state(SE_DEPTH_SCALE, 0);
 	cs.set_state(SE_DEPTH_BIAS, 0);
 	cs.set_state(SE_CONFIG, 0);
-	set_state_fixp(cs, SE_CLIP_RIGHT, (d.width << 16) + SE_CLIP_MARGIN_RIGHT);
-	set_state_fixp(cs, SE_CLIP_BOTTOM, (d.height << 16) + SE_CLIP_MARGIN_BOTTOM);
+	set_state_fixp(cs, SE_CLIP_RIGHT, (sc.maxx << 16) + SE_CLIP_MARGIN_RIGHT);
+	set_state_fixp(cs, SE_CLIP_BOTTOM, (sc.maxy << 16) + SE_CLIP_MARGIN_BOTTOM);
 
 	// --- RA ----------------------------------------------------------------------
 	cs.set_state(RA_CONTROL, 0x1);
@@ -735,7 +740,9 @@ void emit_mesh(CmdStream &cs, const MeshDraw &d)
 	cs.set_state(PS_CONTROL, 0x2); // SATURATE_RT0
 
 	// --- PE render target + optional depth -----------------------------------
-	cs.set_state(PE_DEPTH_CONFIG, d.depth ? PE_DEPTH_CONFIG_D16_LESS_WRITE : PE_DEPTH_CONFIG_DISABLED);
+	// With no depth buffer bound the mode is NONE; otherwise the func/mask come
+	// from the depth state (etna_depth.hh).
+	cs.set_state(PE_DEPTH_CONFIG, d.depth ? d.depth_state.pe_depth_config() : PE_DEPTH_CONFIG_DISABLED);
 	cs.set_state(PE_DEPTH_NEAR, fui(0.0f));
 	cs.set_state(PE_DEPTH_FAR, fui(1.0f));
 	cs.set_state(PE_DEPTH_NORMALIZE, d.depth ? fui(65535.0f) : 0);

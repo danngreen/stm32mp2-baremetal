@@ -191,6 +191,15 @@ The tests are:
   corners must cover the same quad (equal counts), LINE_LOOP must draw
   strictly more than LINE_STRIP on the same three vertices (the closing edge),
   and LINES/POINTS are checked by where their bounding box lands.
+- cull_test(): face culling and `glFrontFace`. Asserts only handedness-agnostic
+  relationships (see below) and prints the handedness it observes.
+- scissor_test(): draws a target-covering quad through several scissor
+  rectangles -- disabled, a box, a corner, oversized, and degenerate -- and
+  checks the surviving pixels are exactly the rectangle.
+- depth_func_test(): lays down a red quad at z=0.5, then a green one at z=0.7
+  under each compare function, so the surviving colour reads out the function
+  directly. Then `glDepthMask`: a z=0.3 draw with writes off must change the
+  colour but not the buffer, proven by a following z=0.4 draw still passing.
 
 
 ### Alpha blending
@@ -266,6 +275,51 @@ primitive (value 8) and Mesa's `translate_draw_mode()` maps to it, but Gallium
 never advertises it in `supported_prim_modes`, so that path is untested
 upstream. `expand_quads()` turns quad vertices into triangles on the CPU
 instead -- which a GL front end has to do for `GL_QUAD_STRIP` regardless.
+
+
+### Culling, scissor, and depth functions
+
+Three more pieces of fixed-function GL state, all ported from the Mesa etnaviv
+driver and all `constexpr` so the encodings are proven at compile time.
+
+**Culling** (`etna_raster.hh`) is `PA_CONFIG.CULL_FACE_MODE`, bits [9:8]. The
+field names the winding to **discard** -- 0 off, 1 cull clockwise, 2 cull
+counter-clockwise -- not the front face. So `glCullFace` and `glFrontFace`
+collapse into one value: cull CCW exactly when "cull the front face" and "front
+faces are CCW" agree. All four combinations are checked against Mesa's
+`translate_cull_face()` by `static_assert`.
+
+Which winding the hardware calls clockwise is a *window-space* question, and our
+viewport maps NDC +Y to increasing framebuffer rows -- the opposite of the usual
+GL convention. Rather than guess, `cull_test()` asserts only what must hold
+either way: with culling off the triangle draws; for a given vertex order
+exactly one of cull-front/cull-back removes it; and reversing either the vertex
+order or `glFrontFace` swaps which one does. It then prints the handedness it
+actually observed, which is the useful output.
+
+**Scissor** (`etna_raster.hh`) is the `SE_SCISSOR_*` and `SE_CLIP_*` pairs, which
+were already being emitted at full-target size. `maxx`/`maxy` are exclusive,
+matching Mesa (which clips against `fb->width` directly), and an enabled rect is
+clamped to the target the way `etna_update_clipping()` intersects the two. Mesa
+emits no `CLIP_LEFT`/`CLIP_TOP` -- the clip rect's origin is implicitly 0 and
+only the scissor carries the min corner. This is all Processing's `clip()`
+needs, since that is rectangular, so no stencil work is required.
+
+**Depth** (`etna_depth.hh`) is `PE_DEPTH_CONFIG`, which is assembled from two
+independent groups: framebuffer-derived (`DEPTH_MODE`, `DEPTH_FORMAT`, `UNK18`)
+and depth-state-derived (`DEPTH_FUNC`, `WRITE_ENABLE`, `EARLY_Z`,
+`DISABLE_ZS`). That is why "no depth buffer" and "depth buffer present but test
+off" are different words -- only the first has `DEPTH_MODE = NONE`. A disabled
+test still runs the stage with `ALWAYS`, which is what keeps depth *writes*
+working with the test off. `DISABLE_ZS` switches the late depth/stencil stage
+off entirely and is set when neither a test nor a write needs it.
+
+Early-Z is deliberately left off. Mesa enables it only under a pile of
+conditions (the `RA_WRITE_DEPTH` feature, no alpha test, shader neither writes Z
+nor discards, render target not linear), and rnndb warns that the late stage
+must be disabled when early writes are active "otherwise the GPU hangs". Our
+`RA_EARLY_DEPTH` value is the late-Z one the depth test was verified with;
+revisit only with a hardware test.
 
 
 ### Spinning cube
@@ -416,6 +470,32 @@ primitive types:
   LINE_LOOP    : NNN px bbox x[12..51] y[12..51] (3 prims)
   POINTS       : NNN px bbox x[16..48] y[16..48] (4 prims)
 GPU assembled points, lines, line strips/loops, and triangle strips/fans. \o/
+face culling:
+  ccw verts, cull off  : NNN px bbox x[..] y[..]
+  ccw verts, cull back : NNN px
+  ccw verts, cull front: NNN px
+  cw  verts, cull back : NNN px
+  cw  verts, cull front: NNN px
+  ccw verts, cull back, frontFace=CW : NNN px
+  ccw verts, cull front, frontFace=CW: NNN px
+  observed: with frontFace=CCW, a CCW-in-NDC triangle is ???-facing in window space
+GPU culled by winding, and glFrontFace flips it. \o/
+scissor:
+  disabled      : 4096 px bbox x[0..63] y[0..63]
+  [16,8)-(48,40): 1024 px bbox x[16..47] y[8..39]
+  [0,0)-(8,8)   : 64 px bbox x[0..7] y[0..7]
+  oversized     : 4096 px bbox x[0..63] y[0..63]
+  empty         : 0 px
+GPU clipped to the scissor rectangle. \o/
+depth compare functions (red at z=0.5, then green at z=0.7):
+  LESS     : got 0xFFFF0000 expect 0xFFFF0000  ok
+  GREATER  : got 0xFF00FF00 expect 0xFF00FF00  ok
+  ALWAYS   : got 0xFF00FF00 expect 0xFF00FF00  ok
+  NEVER    : got 0xFFFF0000 expect 0xFFFF0000  ok
+  LEQUAL   : got 0xFFFF0000 expect 0xFFFF0000  ok
+  GEQUAL   : got 0xFF00FF00 expect 0xFF00FF00  ok
+  depth mask: after z=0.3 (write off) then z=0.4, centre is 0xFF0000FF expect 0xFF0000FF
+GPU honoured all six depth compare functions and the depth write mask. \o/
 cube frame 0: 658 px drawn, 0 mismatches (562 edge px ignored)
 cube frame 1: 761 px drawn, 0 mismatches (687 edge px ignored)
 cube frame 2: 721 px drawn, 0 mismatches (613 edge px ignored)

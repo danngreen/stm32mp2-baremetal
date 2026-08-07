@@ -1,7 +1,9 @@
 #pragma once
 #include "etna.hh"
 #include "etna_blend.hh"
+#include "etna_depth.hh"
 #include "etna_prim.hh"
+#include "etna_raster.hh"
 #include <cstdint>
 #include <span>
 
@@ -71,10 +73,17 @@ struct MeshDraw {
 	uint32_t vertex_count = 0;
 	const Bo *depth = nullptr; // optional depth buffer (cleared by caller)
 	uint32_t depth_stride = 0;
-	BlendState blend{};						   // default = off (bit-identical to the pre-blend path)
-	Primitive prim = Primitive::Triangles;	   // glBegin mode
-	float line_width = 1.0f;				   // line prims; PA registers take half this
-	float point_size = 1.0f;				   // point prims; likewise
+	// Only consulted when `depth` is bound; with no depth buffer the pipe emits
+	// the DEPTH_MODE=NONE word regardless. Defaults to LESS+write, which is
+	// what the depth path did before this was configurable.
+	DepthState depth_state = kDepthLessWrite;
+	BlendState blend{};					   // default = off (bit-identical to the pre-blend path)
+	Primitive prim = Primitive::Triangles; // glBegin mode
+	CullMode cull = CullMode::None;		   // glCullFace + glEnable(GL_CULL_FACE)
+	FrontFace front_face = FrontFace::CCW; // glFrontFace; GL's default
+	Scissor scissor{};					   // default = disabled = whole target
+	float line_width = 1.0f;			   // line prims; PA registers take half this
+	float point_size = 1.0f;			   // point prims; likewise
 };
 void emit_mesh(CmdStream &cs, const MeshDraw &d);
 

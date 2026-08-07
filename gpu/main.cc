@@ -322,6 +322,12 @@ int main()
 	if (ok)
 		ok = primitive_test(gpu);
 	if (ok)
+		ok = cull_test(gpu);
+	if (ok)
+		ok = scissor_test(gpu);
+	if (ok)
+		ok = depth_func_test(gpu);
+	if (ok)
 		ok = spinning_cube_test(gpu);
 
 	// Not needed, but interesting test

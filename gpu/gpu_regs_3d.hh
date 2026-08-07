@@ -108,6 +108,10 @@ constexpr uint32_t PA_CONFIG_TRIANGLE = 0x10000 | 0x2000;
 // reports REG_WideLine = 1, so line draws without this bit silently produce no
 // fragments. See etna_prim.hh::pa_config().
 constexpr uint32_t PA_CONFIG_WIDE_LINE = 0x400000;
+// CULL_FACE_MODE is [9:8]; the value names the winding to DISCARD.
+// 0 = OFF, 1 = cull clockwise, 2 = cull counter-clockwise. See etna_raster.hh.
+constexpr uint32_t PA_CONFIG_CULL_CW = 1u << 8;
+constexpr uint32_t PA_CONFIG_CULL_CCW = 2u << 8;
 
 // ---- SE (setup engine / scissor / clip) -------------------------------------
 constexpr uint32_t SE_SCISSOR_LEFT = 0x0C00;   // fixp16
@@ -183,6 +187,19 @@ constexpr uint32_t RA_EARLY_DEPTH_DISABLED = 0x15000030;   // FORWARD_Z|W|WRITE_
 constexpr uint32_t PE_DEPTH_CONFIG_D16_LESS_WRITE = 0x00041101;
 constexpr uint32_t PIPE_FUNC_LESS = 1;    // PE_DEPTH_CONFIG DEPTH_FUNC value
 constexpr uint32_t PIPE_FUNC_GREATER = 4; // (for the reverse-order sanity draw)
+
+// PE_DEPTH_CONFIG fields (rnndb state_3d.xml), for building the word rather
+// than using the two fixed constants above. See etna_depth.hh.
+//   [1:0] DEPTH_MODE (0 NONE, 1 Z, 2 W)      bit 4  DEPTH_FORMAT (0 D16, 1 D24S8)
+//   [10:8] DEPTH_FUNC (COMPARE_FUNC)         bit 12 WRITE_ENABLE (glDepthMask)
+//   bit 16 EARLY_Z                           bit 18 UNK18 (blob always sets it)
+//   bit 24 DISABLE_ZS (turns the late depth/stencil stage off entirely)
+constexpr uint32_t PE_DEPTH_CONFIG_MODE_Z = 0x1;
+constexpr uint32_t PE_DEPTH_CONFIG_FUNC_SHIFT = 8;
+constexpr uint32_t PE_DEPTH_CONFIG_WRITE_ENABLE = 0x1000;
+constexpr uint32_t PE_DEPTH_CONFIG_EARLY_Z = 0x10000;
+constexpr uint32_t PE_DEPTH_CONFIG_UNK18 = 0x40000;
+constexpr uint32_t PE_DEPTH_CONFIG_DISABLE_ZS = 0x01000000;
 
 // ---- PE alpha blending (glBlendFunc / glBlendEquation) ----------------------
 // Field layout from etna_viv rnndb state_3d.xml <reg32 name="ALPHA_CONFIG">,

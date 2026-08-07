@@ -881,6 +881,178 @@ bool triangle_blend_test(Gpu &gpu)
 //
 // A line primitive that renders nothing is the specific failure to watch for:
 // that is the PA_CONFIG.WIDE_LINE trap described in etna_prim.hh.
+// -----------------------------------------------------------------------------
+//  Shared harness for the pipeline-state tests
+// -----------------------------------------------------------------------------
+// primitive/cull/scissor/depth-func all want the same thing: clear a small
+// target, run one or more emit_mesh draws into it, untile, and reduce the
+// result to "how many pixels were drawn and where". This owns those buffers and
+// the pass-through shaders so each test only expresses what it is varying.
+namespace
+{
+struct StateTarget {
+	static constexpr uint32_t W = 64, H = 64;
+	static constexpr uint32_t Pw = (W + 15) & ~15u;
+	static constexpr uint32_t Ph = (H + 3) & ~3u;
+	static constexpr uint32_t Stride = Pw * 4;
+	static constexpr uint32_t DepthStride = Pw * 2;
+	static constexpr uint32_t Clear = 0xFF000000; // opaque black
+
+	Gpu *gpu = nullptr;
+	Bo rt, depth, vb, vsb, psb, lin;
+	bool has_depth = false;
+
+	// `max_verts` sizes the vertex buffer; `with_depth` adds a D16 buffer.
+	bool init(Gpu &g, uint32_t max_verts, bool with_depth)
+	{
+		gpu = &g;
+		has_depth = with_depth;
+		rt = g.alloc(Stride * Ph);
+		vb = g.alloc(max_verts * 7 * 4);
+		vsb = g.alloc(sizeof(kVsColorCode));
+		psb = g.alloc(sizeof(kPsColorCode));
+		lin = g.alloc(W * H * 4);
+		if (with_depth)
+			depth = g.alloc(DepthStride * Ph);
+		if (!rt || !vb || !vsb || !psb || !lin || (with_depth && !depth))
+			return false;
+
+		std::ranges::copy(kVsColorCode, vsb.span<uint32_t>().begin());
+		vsb.cpu_fini(RelocWrite);
+		std::ranges::copy(kPsColorCode, psb.span<uint32_t>().begin());
+		psb.cpu_fini(RelocWrite);
+		return true;
+	}
+
+	// Reset the target before a sequence of draws. Depth resets to far (0xFFFF).
+	void begin(uint32_t clear_color = Clear)
+	{
+		std::ranges::fill(rt.span<uint32_t>(), clear_color);
+		rt.cpu_fini(RelocWrite);
+		if (has_depth) {
+			std::ranges::fill(depth.span<uint16_t>(), uint16_t(0xFFFF));
+			depth.cpu_fini(RelocWrite);
+		}
+	}
+
+	// A MeshDraw wired to this target; callers override only what they vary.
+	MeshDraw base() const
+	{
+		return MeshDraw{
+			.rt = &rt,
+			.rt_stride = Stride,
+			.vtx = &vb,
+			.vtx_stride = 28,
+			.vs = &vsb,
+			.vs_words = kVsColorCode.size(),
+			.vs_temps = 4,
+			.ps = &psb,
+			.ps_words = kPsColorCode.size(),
+			.ps_temps = 2,
+			.ps_out_reg = 1,
+			.width = W,
+			.height = H,
+			.depth = has_depth ? &depth : nullptr,
+			.depth_stride = has_depth ? DepthStride : 0,
+		};
+	}
+
+	// Upload vertices and issue one draw. Does NOT clear -- call begin() first.
+	bool draw(MeshDraw d, std::span<const float> verts, uint32_t nverts)
+	{
+		std::ranges::copy(verts, vb.span<float>().begin());
+		vb.cpu_fini(RelocWrite);
+		d.vertex_count = nverts;
+
+		auto cs = gpu->new_cmd_stream(1024);
+		etna::emit_mesh(cs, d);
+		if (!gpu->submit_and_wait(cs)) {
+			gpu->dump_status("state test draw");
+			return false;
+		}
+		return true;
+	}
+
+	struct Stats {
+		uint32_t drawn = 0;
+		uint32_t min_x = W, max_x = 0, min_y = H, max_y = 0;
+		bool ok = false;
+
+		// Did every drawn pixel fall inside [x0,x1) x [y0,y1)?
+		bool within(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1) const
+		{
+			return drawn && min_x >= x0 && max_x < x1 && min_y >= y0 && max_y < y1;
+		}
+	};
+
+	// Untile and reduce to a count + bounding box of non-clear pixels.
+	Stats finish(uint32_t clear_color = Clear)
+	{
+		Stats s;
+		std::ranges::fill(lin.span<uint32_t>(), clear_color);
+		lin.cpu_fini(RelocWrite);
+		auto cs = gpu->new_cmd_stream(256);
+		resolve(cs, lin, rt, W, H, Stride, W * 4);
+		if (!gpu->submit_and_wait(cs)) {
+			gpu->dump_status("state test resolve");
+			return s;
+		}
+		lin.cpu_prep(RelocRead);
+
+		auto img = lin.span<const uint32_t>();
+		for (uint32_t y = 0; y < H; y++)
+			for (uint32_t x = 0; x < W; x++)
+				if (img[y * W + x] != clear_color) {
+					s.drawn++;
+					s.min_x = std::min(s.min_x, x);
+					s.max_x = std::max(s.max_x, x);
+					s.min_y = std::min(s.min_y, y);
+					s.max_y = std::max(s.max_y, y);
+				}
+		s.ok = true;
+		return s;
+	}
+
+	uint32_t pixel_at(uint32_t x, uint32_t y) const
+	{
+		return lin.span<const uint32_t>()[y * W + x];
+	}
+
+	static void report(const char *name, const Stats &s)
+	{
+		print("  ", name, ": ", s.drawn, " px");
+		if (s.drawn)
+			print(" bbox x[", s.min_x, "..", s.max_x, "] y[", s.min_y, "..", s.max_y, "]");
+		print("\n");
+	}
+};
+
+// One vertex for emit_mesh's layout: pos vec3 + colour vec4.
+constexpr std::array<float, 7> mkvtx(float x, float y, float z, float r, float g, float b, float a = 1.0f)
+{
+	return {x, y, z, r, g, b, a};
+}
+
+// Pack up to 8 vertices into one interleaved buffer.
+inline std::array<float, 8 * 7> packv(std::initializer_list<std::array<float, 7>> vs)
+{
+	std::array<float, 8 * 7> out{};
+	uint32_t w = 0;
+	for (const auto &v : vs)
+		for (float f : v)
+			out[w++] = f;
+	return out;
+}
+
+// An axis-aligned quad as a 6-vertex triangle list, in NDC.
+inline std::array<float, 8 * 7>
+quad_tris(float x0, float y0, float x1, float y1, float z, float r, float g, float b, float a = 1.0f)
+{
+	return packv({mkvtx(x0, y0, z, r, g, b, a), mkvtx(x1, y0, z, r, g, b, a), mkvtx(x1, y1, z, r, g, b, a),
+				  mkvtx(x0, y0, z, r, g, b, a), mkvtx(x1, y1, z, r, g, b, a), mkvtx(x0, y1, z, r, g, b, a)});
+}
+} // namespace
+
 bool primitive_test(Gpu &gpu)
 {
 	constexpr uint32_t W = 64, H = 64;
@@ -1080,6 +1252,297 @@ bool primitive_test(Gpu &gpu)
 	}
 
 	print("GPU assembled points, lines, line strips/loops, and triangle strips/fans. \\o/\n");
+	return true;
+}
+
+// =============================================================================
+//  Face culling and winding
+// =============================================================================
+//
+// Which winding the hardware calls "clockwise" is a window-space question, and
+// our viewport maps NDC +Y to increasing framebuffer rows -- the opposite of
+// the usual GL convention. Rather than assume a handedness, this test asserts
+// only the relationships that must hold whichever way round it is:
+//
+//   1. With culling off, the triangle draws.
+//   2. For a given vertex order, exactly ONE of cull-front / cull-back removes
+//      it (a face is either front or back; it cannot be neither or both).
+//   3. Reversing the vertex order swaps which one removes it.
+//   4. Flipping glFrontFace swaps which one removes it.
+//
+// Together those prove the cull mode reaches the hardware AND that the front
+// face setting is wired, without hard-coding a handedness. The test prints the
+// handedness it observes, which is the useful output.
+bool cull_test(Gpu &gpu)
+{
+	StateTarget t;
+	if (!t.init(gpu, 8, false))
+		return false;
+
+	// A triangle listed counter-clockwise in NDC (+Y up).
+	const auto ccw = packv({mkvtx(-0.7f, -0.7f, 0.5f, 1, 1, 1), mkvtx(0.7f, -0.7f, 0.5f, 1, 1, 1),
+							mkvtx(0.0f, 0.7f, 0.5f, 1, 1, 1)});
+	// The same triangle with two vertices swapped -> opposite winding.
+	const auto cw = packv({mkvtx(0.7f, -0.7f, 0.5f, 1, 1, 1), mkvtx(-0.7f, -0.7f, 0.5f, 1, 1, 1),
+						   mkvtx(0.0f, 0.7f, 0.5f, 1, 1, 1)});
+
+	auto shot = [&](std::span<const float> verts, etna::CullMode c, etna::FrontFace f) {
+		t.begin();
+		auto d = t.base();
+		d.cull = c;
+		d.front_face = f;
+		if (!t.draw(d, verts, 3))
+			return StateTarget::Stats{};
+		return t.finish();
+	};
+
+	print("face culling:\n");
+	struct Case {
+		const char *name;
+		std::span<const float> verts;
+		etna::CullMode cull;
+		etna::FrontFace front;
+	};
+	const Case cases[] = {
+		{"ccw verts, cull off  ", ccw, etna::CullMode::None, etna::FrontFace::CCW},
+		{"ccw verts, cull back ", ccw, etna::CullMode::Back, etna::FrontFace::CCW},
+		{"ccw verts, cull front", ccw, etna::CullMode::Front, etna::FrontFace::CCW},
+		{"cw  verts, cull back ", cw, etna::CullMode::Back, etna::FrontFace::CCW},
+		{"cw  verts, cull front", cw, etna::CullMode::Front, etna::FrontFace::CCW},
+		{"ccw verts, cull back, frontFace=CW ", ccw, etna::CullMode::Back, etna::FrontFace::CW},
+		{"ccw verts, cull front, frontFace=CW", ccw, etna::CullMode::Front, etna::FrontFace::CW},
+	};
+	std::array<StateTarget::Stats, 7> r;
+	for (uint32_t i = 0; i < 7; i++) {
+		r[i] = shot(cases[i].verts, cases[i].cull, cases[i].front);
+		if (!r[i].ok) {
+			print("FAILED: a cull draw did not complete\n");
+			return false;
+		}
+		StateTarget::report(cases[i].name, r[i]);
+	}
+
+	if (r[0].drawn == 0) {
+		print("FAILED: culling disabled should still draw the triangle\n");
+		return false;
+	}
+	// 2. Exactly one of cull-front / cull-back removes a given winding.
+	auto exactly_one_culled = [](const StateTarget::Stats &a, const StateTarget::Stats &b, const char *what) {
+		const bool a0 = a.drawn == 0, b0 = b.drawn == 0;
+		if (a0 == b0) {
+			print("FAILED: ", what, " -- cull-back drew ", a.drawn, " px and cull-front drew ", b.drawn,
+				  " px; exactly one should have been culled\n");
+			return false;
+		}
+		return true;
+	};
+	if (!exactly_one_culled(r[1], r[2], "ccw vertex order"))
+		return false;
+	if (!exactly_one_culled(r[3], r[4], "cw vertex order"))
+		return false;
+	if (!exactly_one_culled(r[5], r[6], "ccw verts with frontFace=CW"))
+		return false;
+
+	// 3. Reversing the winding swaps which cull mode removes the triangle.
+	if ((r[1].drawn == 0) == (r[3].drawn == 0)) {
+		print("FAILED: reversing the vertex order should swap which face is culled\n");
+		return false;
+	}
+	// 4. Flipping glFrontFace does the same.
+	if ((r[1].drawn == 0) == (r[5].drawn == 0)) {
+		print("FAILED: flipping frontFace should swap which face is culled\n");
+		return false;
+	}
+
+	// Report the handedness we actually observed -- the genuinely new information.
+	print("  observed: with frontFace=CCW, a CCW-in-NDC triangle is ",
+		  (r[1].drawn == 0) ? "BACK-facing" : "FRONT-facing", " in window space\n");
+	print("GPU culled by winding, and glFrontFace flips it. \\o/\n");
+	return true;
+}
+
+// =============================================================================
+//  Scissor
+// =============================================================================
+//
+// Draws a target-covering quad through several scissor rectangles and checks
+// that the drawn pixels are exactly the rectangle. This is also what a GL front
+// end needs for Processing's clip(), which is rectangular -- so no stencil.
+bool scissor_test(Gpu &gpu)
+{
+	StateTarget t;
+	if (!t.init(gpu, 8, false))
+		return false;
+
+	// Covers the whole target, so whatever survives is the scissor's doing.
+	const auto full = quad_tris(-1.0f, -1.0f, 1.0f, 1.0f, 0.5f, 1, 1, 1);
+
+	auto shot = [&](etna::Scissor sc) {
+		t.begin();
+		auto d = t.base();
+		d.scissor = sc;
+		if (!t.draw(d, full, 6))
+			return StateTarget::Stats{};
+		return t.finish();
+	};
+
+	print("scissor:\n");
+	constexpr uint32_t W = StateTarget::W, H = StateTarget::H;
+
+	const auto off = shot({});
+	const auto box = shot({.enable = true, .minx = 16, .miny = 8, .maxx = 48, .maxy = 40});
+	const auto corner = shot({.enable = true, .minx = 0, .miny = 0, .maxx = 8, .maxy = 8});
+	const auto over = shot({.enable = true, .minx = 0, .miny = 0, .maxx = 999, .maxy = 999});
+	const auto empty = shot({.enable = true, .minx = 30, .miny = 30, .maxx = 30, .maxy = 30});
+
+	for (const auto *s : {&off, &box, &corner, &over, &empty})
+		if (!s->ok) {
+			print("FAILED: a scissor draw did not complete\n");
+			return false;
+		}
+	StateTarget::report("disabled      ", off);
+	StateTarget::report("[16,8)-(48,40)", box);
+	StateTarget::report("[0,0)-(8,8)   ", corner);
+	StateTarget::report("oversized     ", over);
+	StateTarget::report("empty         ", empty);
+
+	// Disabled and oversized must both mean "the whole target". The exact count
+	// here depends on the quad's own edge/fill rule (its edges sit on the target
+	// boundary), so require "essentially full" plus a full-target bounding box
+	// rather than a precise 4096 -- a fill-rule detail is not what is under test.
+	if (off.drawn < W * H - 128 || off.min_x != 0 || off.min_y != 0 || off.max_x != W - 1 ||
+		off.max_y != H - 1) {
+		print("FAILED: scissor disabled should cover the whole target, got ", off.drawn, " px\n");
+		return false;
+	}
+	if (over.drawn != off.drawn) {
+		print("FAILED: an oversized scissor should clamp to the target\n");
+		return false;
+	}
+	// Here all four edges are the SCISSOR's, not the quad's -- the scissor is a
+	// hard window-space clamp, so this one should be exact. If it is off by a
+	// pixel that is a real finding about the SE margin constants.
+	if (box.drawn != 32 * 32 || !box.within(16, 8, 48, 40)) {
+		print("FAILED: scissored quad should be exactly 1024 px inside x[16..47] y[8..39]\n");
+		return false;
+	}
+	// The corner rect's min edges coincide with the quad's own edges, so allow
+	// the fill-rule slack there; the max edges are still the scissor's.
+	if (corner.drawn < 7 * 7 || corner.drawn > 8 * 8 || !corner.within(0, 0, 8, 8)) {
+		print("FAILED: corner scissor should clip to about 8x8 px at the origin, got ", corner.drawn, "\n");
+		return false;
+	}
+	// A degenerate rect must draw nothing rather than wrapping.
+	if (empty.drawn != 0) {
+		print("FAILED: an empty scissor drew ", empty.drawn, " px\n");
+		return false;
+	}
+
+	print("GPU clipped to the scissor rectangle. \\o/\n");
+	return true;
+}
+
+// =============================================================================
+//  Depth compare functions and the depth mask
+// =============================================================================
+//
+// A red quad is laid down at z = 0.5 with LESS+write, then a green quad at
+// z = 0.7 (farther) is drawn over it with each compare function. Whether the
+// green survives is a direct read-out of the function:
+//
+//   LESS / NEVER      -> 0.7 fails against 0.5  -> stays red
+//   GREATER / ALWAYS  -> passes                 -> turns green
+//
+// Then glDepthMask: draw green at z = 0.3 with LESS but writes OFF, so the
+// colour changes but the depth buffer keeps 0.5. A following blue quad at
+// z = 0.4 must therefore still pass (0.4 < 0.5). Had the masked draw written,
+// depth would be 0.3 and the blue quad would fail -- so the blue quad's fate
+// is what actually proves the mask.
+bool depth_func_test(Gpu &gpu)
+{
+	StateTarget t;
+	if (!t.init(gpu, 8, true))
+		return false;
+
+	constexpr uint32_t RED = 0xFFFF0000, GREEN = 0xFF00FF00, BLUE = 0xFF0000FF;
+	// Same footprint every time, so "which colour is at the centre" is the answer.
+	auto quad_at = [](float z, float r, float g, float b) {
+		return quad_tris(-0.6f, -0.6f, 0.6f, 0.6f, z, r, g, b);
+	};
+	const auto near_red = quad_at(0.5f, 1, 0, 0);
+	const auto far_green = quad_at(0.7f, 0, 1, 0);
+
+	// Draw the red base, then a second quad with `ds`, and report the centre pixel.
+	auto probe = [&](std::span<const float> second, etna::DepthState ds) -> uint32_t {
+		t.begin();
+		auto base = t.base();
+		base.depth_state = etna::kDepthLessWrite;
+		if (!t.draw(base, near_red, 6))
+			return 0;
+		auto d = t.base();
+		d.depth_state = ds;
+		if (!t.draw(d, second, 6))
+			return 0;
+		if (!t.finish().ok)
+			return 0;
+		return t.pixel_at(StateTarget::W / 2, StateTarget::H / 2);
+	};
+
+	print("depth compare functions (red at z=0.5, then green at z=0.7):\n");
+	struct Case {
+		const char *name;
+		etna::CompareFunc func;
+		uint32_t expect;
+	};
+	const Case cases[] = {
+		{"LESS    ", etna::CompareFunc::Less, RED},
+		{"GREATER ", etna::CompareFunc::Greater, GREEN},
+		{"ALWAYS  ", etna::CompareFunc::Always, GREEN},
+		{"NEVER   ", etna::CompareFunc::Never, RED},
+		{"LEQUAL  ", etna::CompareFunc::LEqual, RED},
+		{"GEQUAL  ", etna::CompareFunc::GEqual, GREEN},
+	};
+	bool ok = true;
+	for (const auto &c : cases) {
+		const uint32_t got = probe(far_green, {.test = true, .write = true, .func = c.func});
+		const bool pass = got == c.expect;
+		print("  ", c.name, ": got 0x", Hex{got}, " expect 0x", Hex{c.expect}, pass ? "  ok\n" : "  MISMATCH\n");
+		ok = ok && pass;
+	}
+	if (!ok) {
+		print("FAILED: a depth compare function did not behave as specified\n");
+		return false;
+	}
+
+	// --- glDepthMask ----------------------------------------------------------
+	// Green at z=0.3 passes LESS but must not update the buffer.
+	t.begin();
+	auto base = t.base();
+	base.depth_state = etna::kDepthLessWrite;
+	if (!t.draw(base, near_red, 6))
+		return false;
+	auto masked = t.base();
+	masked.depth_state = etna::kDepthTestNoWrite; // LESS, write off
+	if (!t.draw(masked, quad_at(0.3f, 0, 1, 0), 6))
+		return false;
+	// Blue at z=0.4: passes only if depth is still 0.5.
+	auto after = t.base();
+	after.depth_state = etna::kDepthLessWrite;
+	if (!t.draw(after, quad_at(0.4f, 0, 0, 1), 6))
+		return false;
+	if (!t.finish().ok)
+		return false;
+
+	const uint32_t masked_px = t.pixel_at(StateTarget::W / 2, StateTarget::H / 2);
+	print("  depth mask: after z=0.3 (write off) then z=0.4, centre is 0x", Hex{masked_px}, " expect 0x",
+		  Hex{BLUE}, "\n");
+	if (masked_px != BLUE) {
+		print("FAILED: the z=0.3 draw wrote depth despite glDepthMask being off"
+			  " (blue at z=0.4 should still have passed against 0.5)\n");
+		return false;
+	}
+
+	print("GPU honoured all six depth compare functions and the depth write mask. \\o/\n");
 	return true;
 }
 
