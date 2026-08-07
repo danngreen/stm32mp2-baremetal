@@ -39,12 +39,32 @@ The other current sketches exercise more of the surface:
   (pinned to the screen center until there is an input device). Two draws:
   the white fill batch and the black triangle-edge stroke batch.
 - `Topics/cellular_automata/Game_Of_Life/Game_Of_Life.pde` — 144×256 cells,
-  each a stroked rect, so fill/stroke alternate primitive classes every cell:
-  73,728 draws and 1.58M command dwords a frame, ~5 fps. This is the workload
+  each a stroked rect. Naively, fill/stroke alternate primitive classes every
+  cell: 73,728 draws and 1.58M command dwords a frame (~5 fps) — the workload
   that exposed (and now regression-tests) the ring-wrap-over-tail-WAIT bug in
-  `Gpu::submit()` — see the gpu/ README. Uses `millis()`, `color()`, the
-  packed-color `fill(int)`/`stroke(int)` overloads, and `keyPressed()`:
-  space pauses, `r` reseeds, `c` clears.
+  `Gpu::submit()`; see the gpu/ README. With deferred strokes (below) the
+  same frame is **129 draws and 1,812 dwords**, ~8 fps, now bounded by the
+  CPU-side vertex path (516k verts/frame), not by submission. Uses
+  `millis()`, `color()`, the packed-color `fill(int)`/`stroke(int)`
+  overloads, and `keyPressed()`: space pauses, `r` reseeds, `c` clears.
+
+## Deferred strokes
+
+Stroke lines are not drawn where they are issued: psketch accumulates
+segments and emits them in bulk when something forces it — a stroke
+color/weight change, any matrix change (vertices transform at emit time), a
+clear, or frame end. Fills stay immediate, so a run of stroked shapes becomes
+one long triangle batch plus one line batch instead of splitting the batch at
+every shape. This is Processing's own P2D "optimized stroke" behavior,
+including its known quirk: within a flush window, strokes render on top of
+later fills. Identical for shapes that don't overlap.
+
+Two hardware-found sizing rules live in `psketch.cc`: the pending buffer is
+capped (and pre-reserved) at 1 MB — an unbounded vector's doubling realloc
+blew the 8 MB heap on Game of Life — and flushes emit in 4096-vertex
+`glBegin` chunks to fit mini-GL's begin buffer. mini-GL also caches the
+combined projection×modelview matrix (rebuilt on any matrix change), so the
+unlit vertex path is one matrix multiply, not two.
 
 ## Keyboard input
 
@@ -57,6 +77,12 @@ no key-up events over a serial line, so `_keyPressed` is only true during the
 frame a byte arrived in — and the booleans are spelled `_keyPressed` /
 `_mousePressed` because C++ cannot give a variable and an event function the
 same name the way Processing's Java does.
+
+Also verified on hardware (first sweep, all vsync-locked unless the sketch
+sets its own frameRate): Star, Regular_Polygon, Sine_Cosine, Bounce, Linear,
+Recursion, Rotate, Tree, Wolfram, Brownian. Brownian's 2000 per-segment
+stroke colors still batch into **one** draw — deferred strokes carry color
+per segment, since color is a vertex attribute, not pipeline state.
 
 ## How a .pde compiles
 
