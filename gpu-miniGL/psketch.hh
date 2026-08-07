@@ -1,6 +1,7 @@
 #pragma once
 #include "gl/mgl_math.hh" // for kPi; the wrappers below use real libm
 #include <cmath>
+#include <vector> // the standing ArrayList / Java-array replacement in converted sketches
 
 // =============================================================================
 //  psketch.hh -- the slice of the Processing API a sketch calls
@@ -146,6 +147,12 @@ float random(float lo, float hi);
 
 int millis(); // ms since boot (the generic timer, not wall time)
 
+// Fake wall clock: there is no RTC, so this "time of day" starts at boot.
+// Enough for sketches that use time as an animation source (Rotate, Clock).
+int second();
+int minute();
+int hour();
+
 // --- color and stroke state ---------------------------------------------------
 // Channels are interpreted through colorMode: default RGB with 0..255 ranges.
 // colorMode(HSB, 360, 100, 100) makes fill(h, s, b) hue-based, as in Processing.
@@ -228,6 +235,17 @@ inline void smooth()
 inline void noSmooth()
 {
 }
+// The harness redraws every frame regardless; a noLoop() sketch just redraws
+// the same static image, which produces the same pixels.
+inline void noLoop()
+{
+}
+inline void loop()
+{
+}
+inline void redraw()
+{
+}
 
 // --- harness hooks (main.cc only; not part of the sketch-facing API) ----------
 // Reset matrices/projection/blending to Processing defaults at the top of a
@@ -235,3 +253,6 @@ inline void noSmooth()
 void psk_frame_begin();
 // Minimum microseconds between draw() calls (0 = every vblank); from frameRate().
 unsigned psk_frame_period_us();
+// After sketch_draw(), before the backend ends the frame: emits any deferred
+// stroke geometry (see psketch.cc's deferred-strokes note).
+void psk_frame_end();

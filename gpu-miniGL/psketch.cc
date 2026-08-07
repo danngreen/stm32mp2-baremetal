@@ -61,6 +61,70 @@ void gl_color(const float c[4])
 	glColor4f(c[0], c[1], c[2], c[3]);
 }
 
+// --- deferred strokes ---------------------------------------------------------
+// Stroke lines are not drawn where they are issued: segments accumulate here
+// and go out in bulk when something forces it -- a stroke-state change, a
+// matrix change (vertices transform at emit time), a clear, or frame end.
+// Fills stay immediate, so a run of stroked shapes becomes one long triangle
+// batch plus one line batch instead of splitting at every shape: Game of Life
+// drops from 73,728 GPU draws a frame to ~130. This is Processing's own P2D
+// "optimized stroke" behavior, including its known quirk: within a flush
+// window, strokes render on top of later fills. Identical for shapes that
+// don't overlap.
+// 8 floats per segment: x1,y1,x2,y2,r,g,b,a. Stroke COLOR rides along with
+// each segment (it is a vertex attribute, not batch state, so color changes
+// never force a flush -- a sketch stroking every segment differently still
+// batches). Stroke WEIGHT is real pipeline state and does flush.
+std::vector<float> pend_lines;
+float pend_wt = 1.0f;
+constexpr size_t kSegFloats = 8;
+// One glBegin block must fit mini-GL's 4096-vertex begin buffer: 2048 segs.
+constexpr size_t kStrokeChunkSegs = 2048;
+// Flush when ~1 MB of segments is pending. Flushing early only costs a few
+// extra batches; letting the vector grow unbounded cost the whole heap --
+// hardware-debugged: a dense sketch deferred 2.4 MB and the doubling realloc
+// (old + new block live at once) blew the 8 MB heap into abort(). The buffer
+// is reserved at this size once, so steady state never reallocates.
+constexpr size_t kStrokeCapFloats = 256u * 1024;
+
+void flush_strokes()
+{
+	if (pend_lines.empty())
+		return;
+	glLineWidth(pend_wt);
+	const size_t nsegs = pend_lines.size() / kSegFloats;
+	for (size_t s = 0; s < nsegs;) {
+		size_t chunk = nsegs - s;
+		if (chunk > kStrokeChunkSegs)
+			chunk = kStrokeChunkSegs;
+		glBegin(GL_LINES);
+		for (size_t k = 0; k < chunk; k++) {
+			const float *p = &pend_lines[(s + k) * kSegFloats];
+			glColor4f(p[4], p[5], p[6], p[7]);
+			glVertex2f(p[0], p[1]);
+			glVertex2f(p[2], p[3]);
+		}
+		glEnd();
+		s += chunk;
+	}
+	pend_lines.clear();
+}
+
+void defer_line(float x1, float y1, float x2, float y2)
+{
+	if (!pend_lines.empty() && pend_wt != stroke_wt)
+		flush_strokes();
+	if (pend_lines.empty()) {
+		if (pend_lines.capacity() < kStrokeCapFloats)
+			pend_lines.reserve(kStrokeCapFloats);
+		pend_wt = stroke_wt;
+	}
+	pend_lines.insert(pend_lines.end(),
+					  {x1, y1, x2, y2, stroke_c[0], stroke_c[1], stroke_c[2], stroke_c[3]});
+	if (pend_lines.size() >= kStrokeCapFloats)
+		flush_strokes();
+}
+
 // Resolve channel values through the current colorMode into linear 0..1 RGBA.
 // HSB conversion is the standard 6-sector one (hue wraps, as in Processing).
 void to_rgba(float a, float b, float c, float alpha, float out[4])
@@ -121,6 +185,19 @@ int ellipse_segments(float rmax)
 int millis()
 {
 	return int(read_cntpct() * 1000u / read_cntfreq());
+}
+
+int second()
+{
+	return (millis() / 1000) % 60;
+}
+int minute()
+{
+	return (millis() / 60000) % 60;
+}
+int hour()
+{
+	return (millis() / 3600000) % 24;
 }
 
 // --- random -------------------------------------------------------------------
@@ -208,6 +285,7 @@ void background(float r, float g, float b)
 	float c[4];
 	to_rgba(r, g, b, cmax[3], c);
 	glClearColor(c[0], c[1], c[2], 1.0f);
+	pend_lines.clear(); // pending strokes would be painted over by the clear
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 void background(float gray)
@@ -215,6 +293,7 @@ void background(float gray)
 	float c[4];
 	gray_rgba(gray, cmax[3], c);
 	glClearColor(c[0], c[1], c[2], 1.0f);
+	pend_lines.clear(); // pending strokes would be painted over by the clear
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 void background(int c)
@@ -226,6 +305,7 @@ void background(int c)
 	float f[4];
 	unpack(c, f);
 	glClearColor(f[0], f[1], f[2], 1.0f);
+	pend_lines.clear(); // pending strokes would be painted over by the clear
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
@@ -337,14 +417,14 @@ void ellipse(float a, float b, float c, float d)
 		glEnd();
 	}
 	if (stroke_on) {
-		glLineWidth(stroke_wt);
-		gl_color(stroke_c);
-		glBegin(GL_LINE_LOOP);
-		for (int i = 0; i < n; i++) {
+		float px = cx + rx, py = cy; // the i = 0 point
+		for (int i = 1; i <= n; i++) {
 			const float a = TWO_PI * float(i) / float(n);
-			glVertex2f(cx + rx * cos(a), cy + ry * sin(a));
+			const float qx = cx + rx * cos(a), qy = cy + ry * sin(a);
+			defer_line(px, py, qx, qy);
+			px = qx;
+			py = qy;
 		}
-		glEnd();
 	}
 }
 
@@ -375,14 +455,10 @@ void rect(float a, float b, float c, float d)
 		glEnd();
 	}
 	if (stroke_on) {
-		glLineWidth(stroke_wt);
-		gl_color(stroke_c);
-		glBegin(GL_LINE_LOOP);
-		glVertex2f(x, y);
-		glVertex2f(x + w, y);
-		glVertex2f(x + w, y + h);
-		glVertex2f(x, y + h);
-		glEnd();
+		defer_line(x, y, x + w, y);
+		defer_line(x + w, y, x + w, y + h);
+		defer_line(x + w, y + h, x, y + h);
+		defer_line(x, y + h, x, y);
 	}
 }
 
@@ -390,12 +466,7 @@ void line(float x1, float y1, float x2, float y2)
 {
 	if (!stroke_on)
 		return;
-	glLineWidth(stroke_wt);
-	gl_color(stroke_c);
-	glBegin(GL_LINES);
-	glVertex2f(x1, y1);
-	glVertex2f(x2, y2);
-	glEnd();
+	defer_line(x1, y1, x2, y2);
 }
 
 void triangle(float x1, float y1, float x2, float y2, float x3, float y3)
@@ -409,13 +480,9 @@ void triangle(float x1, float y1, float x2, float y2, float x3, float y3)
 		glEnd();
 	}
 	if (stroke_on) {
-		glLineWidth(stroke_wt);
-		gl_color(stroke_c);
-		glBegin(GL_LINE_LOOP);
-		glVertex2f(x1, y1);
-		glVertex2f(x2, y2);
-		glVertex2f(x3, y3);
-		glEnd();
+		defer_line(x1, y1, x2, y2);
+		defer_line(x2, y2, x3, y3);
+		defer_line(x3, y3, x1, y1);
 	}
 }
 
@@ -431,14 +498,10 @@ void quad(float x1, float y1, float x2, float y2, float x3, float y3, float x4, 
 		glEnd();
 	}
 	if (stroke_on) {
-		glLineWidth(stroke_wt);
-		gl_color(stroke_c);
-		glBegin(GL_LINE_LOOP);
-		glVertex2f(x1, y1);
-		glVertex2f(x2, y2);
-		glVertex2f(x3, y3);
-		glVertex2f(x4, y4);
-		glEnd();
+		defer_line(x1, y1, x2, y2);
+		defer_line(x2, y2, x3, y3);
+		defer_line(x3, y3, x4, y4);
+		defer_line(x4, y4, x1, y1);
 	}
 }
 
@@ -446,6 +509,7 @@ void point(float x, float y)
 {
 	if (!stroke_on)
 		return;
+	flush_strokes(); // keep stroke ordering: pending lines predate this point
 	gl_color(stroke_c);
 	glBegin(GL_POINTS);
 	glVertex2f(x, y);
@@ -480,8 +544,7 @@ float sy(int i)
 }
 void edge(int a, int b)
 {
-	glVertex2f(sx(a), sy(a));
-	glVertex2f(sx(b), sy(b));
+	defer_line(sx(a), sy(a), sx(b), sy(b));
 }
 } // namespace
 
@@ -511,75 +574,64 @@ void endShape(int mode)
 	}
 
 	// Stroke pass: outline every primitive the shape assembled, the way
-	// Processing shows each triangle/quad of a strip.
+	// Processing shows each triangle/quad of a strip. Everything goes through
+	// defer_line (see above); only points draw immediately.
 	if (stroke_on) {
-		glLineWidth(stroke_wt);
-		gl_color(stroke_c);
 		switch (shape_kind) {
 			case POINTS:
+				flush_strokes();
+				gl_color(stroke_c);
 				glBegin(GL_POINTS);
 				for (int i = 0; i < n; i++)
 					glVertex2f(sx(i), sy(i));
 				glEnd();
 				break;
 			case LINES:
-				glBegin(GL_LINES);
 				for (int i = 0; i + 1 < n; i += 2)
 					edge(i, i + 1);
-				glEnd();
 				break;
 			case TRIANGLES:
-				glBegin(GL_LINES);
 				for (int i = 0; i + 2 < n; i += 3) {
 					edge(i, i + 1);
 					edge(i + 1, i + 2);
 					edge(i + 2, i);
 				}
-				glEnd();
 				break;
 			case TRIANGLE_STRIP:
-				glBegin(GL_LINES);
 				for (int i = 0; i + 2 < n; i++) {
 					edge(i, i + 1);
 					edge(i, i + 2);
 					edge(i + 1, i + 2);
 				}
-				glEnd();
 				break;
 			case TRIANGLE_FAN:
-				glBegin(GL_LINES);
 				for (int i = 1; i + 1 < n; i++) {
 					edge(0, i);
 					edge(i, i + 1);
 					edge(i + 1, 0);
 				}
-				glEnd();
 				break;
 			case QUADS:
-				glBegin(GL_LINES);
 				for (int i = 0; i + 3 < n; i += 4) {
 					edge(i, i + 1);
 					edge(i + 1, i + 2);
 					edge(i + 2, i + 3);
 					edge(i + 3, i);
 				}
-				glEnd();
 				break;
 			case QUAD_STRIP:
-				glBegin(GL_LINES);
 				for (int i = 0; i + 3 < n; i += 2) {
 					edge(i, i + 1);
 					edge(i + 1, i + 3);
 					edge(i + 3, i + 2);
 					edge(i + 2, i);
 				}
-				glEnd();
 				break;
 			default: // POLYGON: the outline, closed or open
-				glBegin(mode == CLOSE ? GL_LINE_LOOP : GL_LINE_STRIP);
-				for (int i = 0; i < n; i++)
-					glVertex2f(sx(i), sy(i));
-				glEnd();
+				for (int i = 0; i + 1 < n; i++)
+					edge(i, i + 1);
+				if (mode == CLOSE && n > 2)
+					edge(n - 1, 0);
 				break;
 		}
 	}
@@ -601,34 +653,45 @@ unsigned psk_frame_period_us()
 }
 
 // --- transforms ---------------------------------------------------------------
+// Each flushes pending strokes first: deferred vertices transform when they
+// are finally emitted, so they must go out under the matrix they were drawn
+// with.
 void pushMatrix()
 {
+	flush_strokes();
 	glPushMatrix();
 }
 void popMatrix()
 {
+	flush_strokes();
 	glPopMatrix();
 }
 void translate(float x, float y)
 {
+	flush_strokes();
 	glTranslatef(x, y, 0);
 }
 void rotate(float radians)
 {
+	flush_strokes();
 	glRotatef(radians * (180.0f / PI), 0, 0, 1);
 }
 void scale(float s)
 {
+	flush_strokes();
 	glScalef(s, s, 1);
 }
 void scale(float sx, float sy)
 {
+	flush_strokes();
 	glScalef(sx, sy, 1);
 }
 
 // --- harness ------------------------------------------------------------------
 void psk_frame_begin()
 {
+	pend_lines.clear(); // defensive; psk_frame_end() flushed the last frame
+
 	// No input device yet: the mouse sits at the screen center. Sketches that
 	// map() from mouseX/mouseY get their mid-range behavior.
 	mouseX = width / 2;
@@ -644,4 +707,9 @@ void psk_frame_begin()
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glDisable(GL_DEPTH_TEST);
+}
+
+void psk_frame_end()
+{
+	flush_strokes();
 }

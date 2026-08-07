@@ -76,8 +76,10 @@ int main()
 	}
 
 	// The sketch is 2D, so no depth buffer -- GL_DEPTH_TEST would be inert.
+	// 8 MB vertex arena: a dense sketch (Game of Life is ~14 MB of vertex data
+	// a frame) then splits into 2 arena flushes instead of 28.
 	static mgl::GpuBackend be;
-	if (!be.init(gpu, HActive, VActive, /*with_depth=*/false)) {
+	if (!be.init(gpu, HActive, VActive, /*with_depth=*/false, 8 * 1024 * 1024)) {
 		print("FAILED: mini-GL backend init\n");
 		panic();
 	}
@@ -97,7 +99,19 @@ int main()
 
 	width = HActive;
 	height = VActive;
+
+	// Run setup() inside a real frame, resolved into the first scanout
+	// buffer: Processing presents whatever setup() draws (many sketches only
+	// ever clear or paint here -- Recursion draws once under noLoop()), and
+	// backend clears/draws are no-ops outside a frame.
+	be.set_scanout(&fbs[0], FbStride);
+	mglBeginFrame();
+	psk_frame_begin();
+	glClearColor(0, 0, 0, 1); // defined RT contents even if setup draws nothing
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	sketch_setup();
+	psk_frame_end();
+	mglEndFrame();
 
 	if (!display_init(fbs[0].gpu_addr())) {
 		print("FAILED: display PLL never locked\n");
@@ -132,6 +146,7 @@ int main()
 		mglBeginFrame();
 		psk_frame_begin();
 		sketch_draw();
+		psk_frame_end(); // deferred strokes go out here
 		mglEndFrame();
 		frameCount++;
 		_keyPressed = false; // the "held" boolean lasts one frame per received byte
