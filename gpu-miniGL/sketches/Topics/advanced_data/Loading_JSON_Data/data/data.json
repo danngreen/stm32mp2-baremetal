@@ -1,0 +1,36 @@
+{
+      "bubbles": [
+        {
+          "diameter": 43.19,
+          "label": "Happy",
+          "position": {
+            "x": 160,
+            "y": 103
+          }
+        },
+        {
+          "diameter": 52.42,
+          "label": "Sad",
+          "position": {
+            "x": 372,
+            "y": 137
+          }
+        },
+        {
+          "diameter": 61.8,
+          "label": "Meh",
+          "position": {
+            "x": 273,
+            "y": 235
+          }
+        },
+        {
+          "diameter": 72.5889,
+          "label": "New label",
+          "position": {
+            "x": 313,
+            "y": 65
+          }
+        }
+      ]
+    }
