@@ -23,6 +23,12 @@ int keyCode = 0;
 bool _keyPressed = false;
 bool _mousePressed = false;
 
+namespace
+{
+PApplet papplet_instance;
+}
+PApplet *PApplet::g_papplet = &papplet_instance;
+
 // Weak no-op event handlers; a sketch that defines one overrides it.
 __attribute__((weak)) void keyPressed()
 {
@@ -214,6 +220,164 @@ float random(float lo, float hi)
 	return lo + (hi - lo) * (float(rng >> 8) / 16777216.0f);
 }
 
+void randomSeed(unsigned s)
+{
+	rng = s ? s : 1; // xorshift is stuck at zero
+}
+
+float randomGaussian()
+{
+	// Box-Muller, keeping the second value for the next call as Processing does.
+	static bool have = false;
+	static float spare = 0;
+	if (have) {
+		have = false;
+		return spare;
+	}
+	float u, v, s;
+	do {
+		u = random(-1, 1);
+		v = random(-1, 1);
+		s = u * u + v * v;
+	} while (s >= 1 || s == 0);
+	const float f = ::sqrtf(-2.0f * ::logf(s) / s);
+	spare = v * f;
+	have = true;
+	return u * f;
+}
+
+PVector PVector::random2D()
+{
+	return fromAngle(random(TWO_PI));
+}
+
+PVector PVector::random3D()
+{
+	const float angle = random(TWO_PI);
+	const float vz = random(-1, 1);
+	const float vxy = ::sqrtf(1.0f - vz * vz);
+	return {vxy * ::cosf(angle), vxy * ::sinf(angle), vz};
+}
+
+// --- Perlin noise -------------------------------------------------------------
+// Processing's own algorithm (PApplet.noise): a table of random values indexed
+// by the integer lattice, cosine-interpolated, summed over `octaves` with each
+// octave at half amplitude and double frequency. Reproducing it rather than
+// inventing one matters -- sketches are tuned to how this specific noise looks.
+namespace
+{
+constexpr int kPerlinYWrapB = 4, kPerlinYWrap = 1 << kPerlinYWrapB;
+constexpr int kPerlinZWrapB = 8, kPerlinZWrap = 1 << kPerlinZWrapB;
+constexpr int kPerlinSize = 4095;
+
+float perlin[kPerlinSize + 1];
+bool perlin_init = false;
+int perlin_octaves = 4;
+float perlin_falloff = 0.5f;
+
+// The interpolant: 0.5*(1-cos(t*PI)), a cosine ease between lattice points.
+float noise_fsc(float t)
+{
+	return 0.5f * (1.0f - ::cosf(t * PI));
+}
+
+void perlin_seed(unsigned s)
+{
+	const uint32_t save = rng;
+	rng = s ? s : 1;
+	for (int i = 0; i <= kPerlinSize; i++)
+		perlin[i] = random(1.0f);
+	rng = save;
+	perlin_init = true;
+}
+} // namespace
+
+void noiseSeed(unsigned s)
+{
+	perlin_seed(s);
+}
+
+void noiseDetail(int octaves)
+{
+	if (octaves > 0)
+		perlin_octaves = octaves;
+}
+
+void noiseDetail(int octaves, float falloff)
+{
+	if (octaves > 0)
+		perlin_octaves = octaves;
+	perlin_falloff = falloff;
+}
+
+float noise(float x, float y, float z)
+{
+	if (!perlin_init)
+		perlin_seed(0x9E3779B9u);
+
+	if (x < 0)
+		x = -x;
+	if (y < 0)
+		y = -y;
+	if (z < 0)
+		z = -z;
+
+	int xi = int(x), yi = int(y), zi = int(z);
+	float xf = x - float(xi), yf = y - float(yi), zf = z - float(zi);
+	float r = 0, ampl = 0.5f;
+
+	for (int i = 0; i < perlin_octaves; i++) {
+		int of = xi + (yi << kPerlinYWrapB) + (zi << kPerlinZWrapB);
+		const float rxf = noise_fsc(xf), ryf = noise_fsc(yf);
+
+		float n1 = perlin[of & kPerlinSize];
+		n1 += rxf * (perlin[(of + 1) & kPerlinSize] - n1);
+		float n2 = perlin[(of + kPerlinYWrap) & kPerlinSize];
+		n2 += rxf * (perlin[(of + kPerlinYWrap + 1) & kPerlinSize] - n2);
+		n1 += ryf * (n2 - n1);
+
+		of += kPerlinZWrap;
+		n2 = perlin[of & kPerlinSize];
+		n2 += rxf * (perlin[(of + 1) & kPerlinSize] - n2);
+		float n3 = perlin[(of + kPerlinYWrap) & kPerlinSize];
+		n3 += rxf * (perlin[(of + kPerlinYWrap + 1) & kPerlinSize] - n3);
+		n2 += ryf * (n3 - n2);
+
+		n1 += noise_fsc(zf) * (n2 - n1);
+
+		r += n1 * ampl;
+		ampl *= perlin_falloff;
+		xi <<= 1;
+		xf *= 2;
+		yi <<= 1;
+		yf *= 2;
+		zi <<= 1;
+		zf *= 2;
+		if (xf >= 1.0f) {
+			xi++;
+			xf--;
+		}
+		if (yf >= 1.0f) {
+			yi++;
+			yf--;
+		}
+		if (zf >= 1.0f) {
+			zi++;
+			zf--;
+		}
+	}
+	return r;
+}
+
+float noise(float x, float y)
+{
+	return noise(x, y, 0);
+}
+float noise(float x)
+{
+	return noise(x, 0, 0);
+}
+
 // --- color state --------------------------------------------------------------
 void colorMode(int mode, float max1, float max2, float max3, float maxA)
 {
@@ -387,9 +551,9 @@ void rectMode(int mode)
 	rect_mode = mode;
 }
 
-void ellipse(float a, float b, float c, float d)
+// ellipseMode applied: a/b/c/d -> centre + radii. Shared by ellipse and arc.
+static void resolve_ellipse(float a, float b, float c, float d, float &cx, float &cy, float &rx, float &ry)
 {
-	float cx, cy, rx, ry;
 	switch (ellipse_mode) {
 		case RADIUS:
 			cx = a, cy = b, rx = c, ry = d;
@@ -404,6 +568,12 @@ void ellipse(float a, float b, float c, float d)
 			cx = a, cy = b, rx = c * 0.5f, ry = d * 0.5f;
 			break;
 	}
+}
+
+void ellipse(float a, float b, float c, float d)
+{
+	float cx, cy, rx, ry;
+	resolve_ellipse(a, b, c, d, cx, cy, rx, ry);
 	const int n = ellipse_segments(rx > ry ? rx : ry);
 
 	if (fill_on) {
@@ -426,6 +596,56 @@ void ellipse(float a, float b, float c, float d)
 			py = qy;
 		}
 	}
+}
+
+void arc(float a, float b, float c, float d, float start, float stop, int mode)
+{
+	if (stop < start)
+		stop += TWO_PI;
+	const float sweep = stop - start;
+	if (sweep <= 0)
+		return;
+
+	float cx, cy, rx, ry;
+	resolve_ellipse(a, b, c, d, cx, cy, rx, ry);
+
+	// Segment the arc at the same angular density a full ellipse would use, so
+	// a 90-degree arc is as smooth as the circle it came from.
+	const int full = ellipse_segments(rx > ry ? rx : ry);
+	int n = int(float(full) * sweep / TWO_PI + 0.5f);
+	if (n < 2)
+		n = 2;
+
+	auto px = [&](int i) { return cx + rx * cos(start + sweep * float(i) / float(n)); };
+	auto py = [&](int i) { return cy + ry * sin(start + sweep * float(i) / float(n)); };
+
+	if (fill_on) {
+		gl_color(fill_c);
+		glBegin(GL_TRIANGLE_FAN);
+		// PIE fans from the centre; OPEN/CHORD fill only the region the chord
+		// closes off, which is the fan from the arc's first point.
+		if (mode == PIE)
+			glVertex2f(cx, cy);
+		for (int i = 0; i <= n; i++)
+			glVertex2f(px(i), py(i));
+		glEnd();
+	}
+
+	if (stroke_on) {
+		for (int i = 0; i < n; i++)
+			defer_line(px(i), py(i), px(i + 1), py(i + 1));
+		if (mode == CHORD)
+			defer_line(px(n), py(n), px(0), py(0));
+		else if (mode == PIE) {
+			defer_line(px(n), py(n), cx, cy);
+			defer_line(cx, cy, px(0), py(0));
+		}
+	}
+}
+
+void arc(float a, float b, float c, float d, float start, float stop)
+{
+	arc(a, b, c, d, start, stop, OPEN);
 }
 
 void rect(float a, float b, float c, float d)
@@ -712,4 +932,34 @@ void psk_frame_begin()
 void psk_frame_end()
 {
 	flush_strokes();
+}
+
+// --- direct pixel access ------------------------------------------------------
+Array<int> pixels;
+namespace
+{
+bool pixels_dirty = false;
+}
+
+void loadPixels()
+{
+	const int n = width * height;
+	if (pixels.length != n) {
+		pixels.assign(n, 0);
+		pixels.length = {n};
+	}
+}
+
+void updatePixels()
+{
+	if (pixels.length == width * height)
+		pixels_dirty = true;
+}
+
+const int *psk_take_pixels()
+{
+	if (!pixels_dirty)
+		return nullptr;
+	pixels_dirty = false;
+	return pixels.data();
 }

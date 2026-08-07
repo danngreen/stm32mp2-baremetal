@@ -1,7 +1,8 @@
 #pragma once
 #include "gl/mgl_math.hh" // for kPi; the wrappers below use real libm
+#include "pvector.hh"	  // PVector and ArrayList, assumed by most sketches
 #include <cmath>
-#include <vector> // the standing ArrayList / Java-array replacement in converted sketches
+#include <vector>
 
 // =============================================================================
 //  psketch.hh -- the slice of the Processing API a sketch calls
@@ -61,8 +62,10 @@ inline constexpr int TRIANGLE_FAN = 11;
 inline constexpr int QUADS = 17;
 inline constexpr int QUAD_STRIP = 18;
 inline constexpr int POLYGON = 20;
-inline constexpr int OPEN = 1;	  // endShape
+inline constexpr int OPEN = 1;	  // endShape, and arc() mode
 inline constexpr int CLOSE = 2;
+inline constexpr int CHORD = 3; // arc() modes
+inline constexpr int PIE = 4;
 
 // --- the sketch entry points (implemented in sketch.cc) -----------------------
 void sketch_setup();
@@ -144,6 +147,18 @@ inline float max(float a, float b)
 
 float random(float hi); // deterministic xorshift, seeded at boot
 float random(float lo, float hi);
+void randomSeed(unsigned s);
+float randomGaussian(); // mean 0, standard deviation 1 (Box-Muller)
+
+// Perlin noise, Processing's algorithm: 0..1, smooth, and the same value for
+// the same coordinate. noiseDetail() sets how many octaves are summed and how
+// fast their amplitude falls off -- more octaves = more fine detail.
+float noise(float x);
+float noise(float x, float y);
+float noise(float x, float y, float z);
+void noiseDetail(int octaves);
+void noiseDetail(int octaves, float falloff);
+void noiseSeed(unsigned s);
 
 int millis(); // ms since boot (the generic timer, not wall time)
 
@@ -191,16 +206,19 @@ void strokeWeight(float w);
 void ellipseMode(int mode); // CENTER (default), RADIUS, CORNER, CORNERS
 void rectMode(int mode);	// likewise (rect() honours it)
 void ellipse(float a, float b, float c, float d); // interpreted per ellipseMode
-inline void circle(float cx, float cy, float d)
-{
-	ellipse(cx, cy, d, d);
-}
-void rect(float x, float y, float w, float h); // CORNER mode
-inline void square(float x, float y, float s)
-{
-	rect(x, y, s, s);
-}
+void rect(float x, float y, float w, float h);	 // interpreted per rectMode
+// NOTE: Processing's circle()/square() shorthands are deliberately absent.
+// They are just ellipse()/rect() with equal dimensions, and as free functions
+// they collide with the sketch variables of the same name that examples
+// declare (Morph has `ArrayList<PVector> circle`) -- Java keeps method and
+// field namespaces apart, C++ does not.
 void line(float x1, float y1, float x2, float y2);
+// Arc of the ellipse a/b/c/d (interpreted per ellipseMode), from `start` to
+// `stop` radians, clockwise on screen from the +x axis. Default mode OPEN
+// fills the region closed by the chord and strokes only the curve; CHORD adds
+// the closing line; PIE fills/strokes to the centre.
+void arc(float a, float b, float c, float d, float start, float stop);
+void arc(float a, float b, float c, float d, float start, float stop, int mode);
 void triangle(float x1, float y1, float x2, float y2, float x3, float y3);
 void quad(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4);
 void point(float x, float y);
@@ -219,6 +237,47 @@ void translate(float x, float y);
 void rotate(float radians);
 void scale(float s);
 void scale(float sx, float sy);
+
+// --- direct pixel access ------------------------------------------------------
+// `pixels` is the frame as 0xAARRGGBB, one int per pixel, row-major.
+// loadPixels() sizes it; write into it; updatePixels() puts it on screen.
+// It lands in the scanout buffer AFTER the GPU has resolved the frame, so a
+// sketch that touches pixels is painting over anything it also drew.
+extern Array<int> pixels;
+void loadPixels();
+void updatePixels();
+
+// --- text ---------------------------------------------------------------------
+// Accepted and ignored: drawing glyphs needs the texture path (see TODO.md).
+// Sketches that label their output still run, just without the labels.
+inline void text(const char *, float, float)
+{
+}
+inline void text(const char *, float, float, float, float)
+{
+}
+inline void text(float, float, float)
+{
+}
+inline void text(char, float, float)
+{
+}
+inline void textAlign(int)
+{
+}
+inline void textAlign(int, int)
+{
+}
+inline void textSize(float)
+{
+}
+inline void textLeading(float)
+{
+}
+inline float textWidth(const char *)
+{
+	return 0;
+}
 
 // --- environment --------------------------------------------------------------
 void frameRate(float fps); // the harness throttles the frame loop to this
@@ -247,12 +306,36 @@ inline void redraw()
 {
 }
 
+// --- PApplet compatibility shim -----------------------------------------------
+// In Processing a sketch *is* a PApplet, so a class method can always reach
+// the drawing API through the enclosing instance. Converted sketches use that
+// escape hatch where a member name would otherwise shadow a global (a class's
+// own `dist()` hiding the free `dist()`), so the shim just forwards.
+struct PApplet {
+	static float dist(float x1, float y1, float x2, float y2)
+	{
+		return ::dist(x1, y1, x2, y2);
+	}
+	void noStroke()
+	{
+		::noStroke();
+	}
+	void noFill()
+	{
+		::noFill();
+	}
+	static PApplet *g_papplet; // always non-null; sketches null-check anyway
+};
+
 // --- harness hooks (main.cc only; not part of the sketch-facing API) ----------
 // Reset matrices/projection/blending to Processing defaults at the top of a
 // frame. Sizes come from the globals above, which the harness sets first.
 void psk_frame_begin();
 // Minimum microseconds between draw() calls (0 = every vblank); from frameRate().
 unsigned psk_frame_period_us();
+// Non-null only when the sketch called updatePixels() this frame: the harness
+// copies it into the scanout buffer after the resolve. Clears the flag.
+const int *psk_take_pixels();
 // After sketch_draw(), before the backend ends the frame: emits any deferred
 // stroke geometry (see psketch.cc's deferred-strokes note).
 void psk_frame_end();
