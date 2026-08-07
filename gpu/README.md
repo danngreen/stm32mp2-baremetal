@@ -200,6 +200,12 @@ The tests are:
   under each compare function, so the surviving colour reads out the function
   directly. Then `glDepthMask`: a z=0.3 draw with writes off must change the
   colour but not the buffer, proven by a following z=0.4 draw still passing.
+- mini_gl_test(): drives the whole pipe through ordinary OpenGL calls (see
+  `gl/README.md`) -- checks that a top-left rect lands top-left (the viewport Y
+  flip), that `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` blends over
+  two different destinations, that `glTranslatef` moves geometry, that 100
+  same-state quads collapse to one batch, and that `GL_DEPTH_TEST` rejects the
+  farther quad.
 - batch_test(): draws the same 24-quad scene twice -- once as 24 emit_mesh
   submits, once as one `Context` batch in a single submission -- and requires
   the two images to be pixel-identical. Reports the dwords each draw emitted
@@ -570,6 +576,12 @@ batching (24 same-state quads):
   unbatched NNN ticks (24 submits), batched NNN ticks (1 submit) -- N.Nx
   uniform-changing batch: per-draw dwords first NNN, subsequent NNN; NNN ticks (each draw costs an FE->PE stall -- expected)
 GPU batched 24 draws into one submission, pixel-identical to per-draw submits. \o/
+mini-GL orientation: rect(4,4,24,24) -> (16,16)=0xFFFF0000 (16,48)=0xFF000000
+mini-GL blend: red 0xFFFF0000 green/red 0xFF808000 green/blue 0xFF008080
+mini-GL transform: translated(44,44)=0xFF00FF00 origin(8,8)=0xFF000000
+mini-GL batching: 100 quads -> 1 batch(es), 600 verts, 100 begin/end pairs, NNN ticks
+mini-GL depth: near red then far green -> 0xFFFF0000
+mini-GL drew through the real pipe: orientation, blending, transforms, batching and depth. \o/
 cube frame 0: 658 px drawn, 0 mismatches (562 edge px ignored)
 cube frame 1: 761 px drawn, 0 mismatches (687 edge px ignored)
 cube frame 2: 721 px drawn, 0 mismatches (613 edge px ignored)

@@ -37,3 +37,28 @@ extern "C" void __cxa_pure_virtual()
 	while (1)
 		;
 }
+
+// A class with a virtual destructor gets a "deleting destructor" (D0) that
+// calls operator delete, and the linker wants the symbol even when nothing
+// ever deletes such an object. There is no heap here, so deleting is a bug:
+// trap rather than pretend to free. Defined only if something references them.
+void operator delete(void *) noexcept
+{
+	while (1)
+		;
+}
+void operator delete(void *, unsigned long) noexcept
+{
+	while (1)
+		;
+}
+void operator delete[](void *) noexcept
+{
+	while (1)
+		;
+}
+void operator delete[](void *, unsigned long) noexcept
+{
+	while (1)
+		;
+}

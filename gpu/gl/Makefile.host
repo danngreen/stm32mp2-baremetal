@@ -1,0 +1,25 @@
+# Host build of the mini-GL tests.
+#
+# mini-GL's whole point is that everything above the backend seam is pure
+# computation, so it can be exercised on the development machine instead of on
+# the board. Run with:
+#
+#     make -f gl/Makefile.host test
+#
+# from the gpu/ directory.
+
+CXX ?= c++
+CXXFLAGS ?= -std=c++20 -O1 -g -Wall -Wextra -Wno-unused-parameter
+BUILD := build/host
+
+.PHONY: test clean
+
+test: $(BUILD)/mini_gl_test
+	@$(BUILD)/mini_gl_test
+
+$(BUILD)/mini_gl_test: gl/mini_gl_test.cc gl/mini_gl.cc gl/mini_gl.hh gl/mat4.hh gl/mini_gl_backend.hh
+	@mkdir -p $(BUILD)
+	@$(CXX) $(CXXFLAGS) -Igl -o $@ gl/mini_gl_test.cc gl/mini_gl.cc
+
+clean:
+	@rm -rf $(BUILD)
