@@ -95,13 +95,19 @@ int main()
 	auto t0 = read_cntpct();
 	const uint32_t tick_khz = read_cntfreq() / 1000;
 	uint32_t worst_us = 0;
+	uint64_t next_render = 0;
 
 	while (true) {
 		if (!frame_ready.load(std::memory_order_acquire))
 			continue;
 		frame_ready.store(false, std::memory_order_release);
 
+		// frameRate() throttle: a slow sketch (frameRate(1)) renders on the
+		// first vblank after its period elapses; 0 means every vblank.
 		const auto r0 = read_cntpct();
+		if (r0 < next_render)
+			continue;
+		next_render = r0 + uint64_t(psk_frame_period_us()) * tick_khz / 1000;
 
 		be.set_scanout(&fbs[cur], FbStride);
 		mglBeginFrame();
@@ -125,10 +131,16 @@ int main()
 		ltdc_set_framebuffer(fbs[cur].gpu_addr()); // vblank-latched flip
 		cur ^= 1;
 
+		// Immediate feedback for slow sketches (frameRate(1) would otherwise
+		// stay silent for two minutes before the first stats line).
+		if (frames == 0)
+			print("first frame: ", render_us, " us, ", be.draws_submitted(), " draw(s), ", be.stream_dwords(),
+				  " dwords\n");
+
 		if (++frames % 120 == 0) {
 			const auto now = read_cntpct();
 			const uint32_t us = (now - t0) * 1000 / 120 / tick_khz;
-			print(us ? 1000000 / us : 0, " fps, worst render ", worst_us, " us, ", be.draws_submitted(),
+			print(us ? (1000000 + us / 2) / us : 0, " fps, worst render ", worst_us, " us, ", be.draws_submitted(),
 				  " draw(s), ", be.stream_dwords(), " dwords\n");
 			t0 = now;
 			worst_us = 0;

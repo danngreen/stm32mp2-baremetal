@@ -1,5 +1,6 @@
 #pragma once
-#include "gl/mgl_math.hh"
+#include "gl/mgl_math.hh" // for kPi; the wrappers below use real libm
+#include <cmath>
 
 // =============================================================================
 //  psketch.hh -- the slice of the Processing API a sketch calls
@@ -20,42 +21,72 @@
 //    fill like fill(255, 204) just works
 
 // --- globals ------------------------------------------------------------------
-extern int width, height; // set by the harness from the panel size
-extern int frameCount;	  // incremented by the harness after each draw()
+extern int width, height;	// set by the harness from the panel size
+extern int frameCount;		// incremented by the harness after each draw()
+extern int mouseX, mouseY;	// no input device yet: pinned to the screen center
+
+// --- Processing constants (values from PConstants.java) -----------------------
+inline constexpr int RGB = 1;
+inline constexpr int HSB = 3;
+inline constexpr int CORNER = 0;  // ellipseMode / rectMode
+inline constexpr int CORNERS = 1;
+inline constexpr int RADIUS = 2;
+inline constexpr int CENTER = 3;
+inline constexpr int POINTS = 3;  // beginShape kinds
+inline constexpr int LINES = 5;
+inline constexpr int TRIANGLES = 9;
+inline constexpr int TRIANGLE_STRIP = 10;
+inline constexpr int TRIANGLE_FAN = 11;
+inline constexpr int QUADS = 17;
+inline constexpr int QUAD_STRIP = 18;
+inline constexpr int POLYGON = 20;
+inline constexpr int OPEN = 1;	  // endShape
+inline constexpr int CLOSE = 2;
 
 // --- the sketch entry points (implemented in sketch.cc) -----------------------
 void sketch_setup();
 void sketch_draw();
 
 // --- math, Processing names ---------------------------------------------------
+// These builds link libm (no -ffreestanding), so the wrappers are the real
+// float functions -- exact where mgl_math (which mini-GL itself uses, so the
+// host tests stay bit-identical to the target) is approximate.
 inline constexpr float PI = mgl::kPi;
 inline constexpr float TWO_PI = 2 * mgl::kPi;
 inline constexpr float HALF_PI = mgl::kPi / 2;
 
 inline float sqrt(float x)
 {
-	return mgl::m_sqrt(x);
+	return ::sqrtf(x);
 }
 inline float sin(float x)
 {
-	return mgl::m_sin(x);
+	return ::sinf(x);
 }
 inline float cos(float x)
 {
-	return mgl::m_cos(x);
+	return ::cosf(x);
+}
+inline float tan(float x)
+{
+	return ::tanf(x);
+}
+inline float atan2(float y, float x)
+{
+	return ::atan2f(y, x);
 }
 inline float abs(float x)
 {
-	return mgl::m_abs(x);
+	return ::fabsf(x);
 }
 inline float pow(float x, float y)
 {
-	return mgl::m_pow(x, y);
+	return ::powf(x, y);
 }
 inline float dist(float x1, float y1, float x2, float y2)
 {
 	const float dx = x2 - x1, dy = y2 - y1;
-	return mgl::m_sqrt(dx * dx + dy * dy);
+	return ::sqrtf(dx * dx + dy * dy);
 }
 inline float constrain(float v, float lo, float hi)
 {
@@ -69,11 +100,37 @@ inline float lerp(float a, float b, float t)
 {
 	return a + (b - a) * t;
 }
+inline float radians(float deg)
+{
+	return deg * (mgl::kPi / 180.0f);
+}
+inline float degrees(float rad)
+{
+	return rad * (180.0f / mgl::kPi);
+}
+inline float sq(float x)
+{
+	return x * x;
+}
+inline float min(float a, float b)
+{
+	return a < b ? a : b;
+}
+inline float max(float a, float b)
+{
+	return a > b ? a : b;
+}
 
 float random(float hi); // deterministic xorshift, seeded at boot
 float random(float lo, float hi);
 
-// --- color and stroke state (0..255, like Processing's default mode) ----------
+// --- color and stroke state ---------------------------------------------------
+// Channels are interpreted through colorMode: default RGB with 0..255 ranges.
+// colorMode(HSB, 360, 100, 100) makes fill(h, s, b) hue-based, as in Processing.
+void colorMode(int mode);
+void colorMode(int mode, float max);
+void colorMode(int mode, float max1, float max2, float max3);
+void colorMode(int mode, float max1, float max2, float max3, float maxA);
 void background(float gray);
 void background(float r, float g, float b);
 void fill(float gray);
@@ -89,7 +146,9 @@ void noStroke();
 void strokeWeight(float w);
 
 // --- shapes -------------------------------------------------------------------
-void ellipse(float cx, float cy, float w, float h); // CENTER mode, w/h diameters
+void ellipseMode(int mode); // CENTER (default), RADIUS, CORNER, CORNERS
+void rectMode(int mode);	// likewise (rect() honours it)
+void ellipse(float a, float b, float c, float d); // interpreted per ellipseMode
 inline void circle(float cx, float cy, float d)
 {
 	ellipse(cx, cy, d, d);
@@ -104,6 +163,13 @@ void triangle(float x1, float y1, float x2, float y2, float x3, float y3);
 void quad(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4);
 void point(float x, float y);
 
+// --- custom shapes ------------------------------------------------------------
+void beginShape();		   // POLYGON
+void beginShape(int kind); // POINTS/LINES/TRIANGLES/TRIANGLE_STRIP/... above
+void vertex(float x, float y);
+void endShape();		   // open
+void endShape(int mode);   // CLOSE joins the last vertex back to the first
+
 // --- transforms ---------------------------------------------------------------
 void pushMatrix();
 void popMatrix();
@@ -112,7 +178,25 @@ void rotate(float radians);
 void scale(float s);
 void scale(float sx, float sy);
 
+// --- environment --------------------------------------------------------------
+void frameRate(float fps); // the harness throttles the frame loop to this
+
+// Accepted-and-ignored stubs, so more sketches compile untouched. size() is a
+// no-op because the panel decides the real size -- sketches should use
+// width/height, which most already do.
+inline void size(int, int)
+{
+}
+inline void smooth()
+{
+}
+inline void noSmooth()
+{
+}
+
 // --- harness hooks (main.cc only; not part of the sketch-facing API) ----------
 // Reset matrices/projection/blending to Processing defaults at the top of a
 // frame. Sizes come from the globals above, which the harness sets first.
 void psk_frame_begin();
+// Minimum microseconds between draw() calls (0 = every vblank); from frameRate().
+unsigned psk_frame_period_us();

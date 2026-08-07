@@ -1,18 +1,25 @@
-# gpu-miniGL — a Processing sketch on the panel
+# gpu-miniGL — Processing sketches on the panel
 
-A real Processing example running on the STM32MP257's GPU, baremetal, at the
-panel's refresh rate. This is the first end-to-end proof of the project goal:
-sketch code → mini-GL (`gpu/gl/`) → the etna 3D pipe → LTDC scanout.
+Real Processing examples running on the STM32MP257's GPU, baremetal, at the
+panel's refresh rate. This is the end-to-end proof of the project goal:
+`.pde` sketch → mini-GL (`gpu/gl/`) → the etna 3D pipe → LTDC scanout.
 
-The sketch is **Bouncy Bubbles** (Processing examples, Topics/Motion, based on
-code by Keith Peters): twelve semi-transparent bubbles bouncing and colliding
-under gravity. `sketch.cc` is a line-for-line translation of the `.pde` — the
-physics, constants, and drawing calls are the original's.
+Sketches live under `sketches/` as `.pde` files, compiled as C++ untouched.
+Pick one with the `DEMO` make variable:
+
+```bash
+make BOARD=devboard DEMO=sketches/Basics/color/Radial_Gradient.pde
+make flash-stlink
+```
+
+The default `DEMO` is **Bouncy Bubbles** (Topics/Motion, based on code by
+Keith Peters): twelve semi-transparent bubbles bouncing and colliding under
+gravity.
 
 ```
 mini-GL -> LTDC: a Processing sketch on the panel
 Display up: 720x1280, sketch running
-58 fps, worst render 4998 us, 1 draw(s), 246 dwords
+58 fps, worst render 4986 us, 1 draw(s), 246 dwords
 ```
 
 That last line is the design working as intended: 12 balls × (a triangle-fan
@@ -20,43 +27,85 @@ ellipse each) collapse into **one** GPU draw of 246 dwords per frame, because
 every shape shares the same state (white fill, alpha blend on) and mini-GL
 batches same-state geometry. The frame rate is vsync-locked to the DSI panel.
 
+The other current sketches exercise more of the surface:
+
+- `Basics/color/Radial_Gradient.pde` — 180 concentric ellipses per frame
+  through `colorMode(HSB)`, `ellipseMode(RADIUS)` and `frameRate(1)`. At ~21k
+  vertices a frame it overflows both the 4096-vertex batch and the vertex
+  arena, so one frame becomes 19 draws — the splitting paths doing their job
+  (98 ms a frame, which `frameRate(1)` doesn't notice).
+- `Basics/forms/Triangle_Strip/Triangle_Strip.pde` — a ring via
+  `beginShape(TRIANGLE_STRIP)`/`vertex`/`endShape`, sized by `mouseX`
+  (pinned to the screen center until there is an input device). Two draws:
+  the white fill batch and the black triangle-edge stroke batch.
+
+## How a .pde compiles
+
+Java ignores definition order; C++ does not. `tools/pde_prototypes.py`
+generates forward declarations for the sketch's top-level functions (the same
+job Processing's own preprocessor does), and `sketch_pde.cc` includes those,
+then the `.pde` itself, and maps `setup()`/`draw()` onto the harness. That is
+the whole pipeline — the `.pde` files themselves stay untouched, provided
+they are C++-compatible Processing code (the examples largely are; `fmod`
+instead of `%` on floats is the usual edit).
+
+## Dynamic memory
+
+This project links the real newlib/libstdc++ (no `-nostdlib`, no
+`-ffreestanding`), so sketches can `new`, and psketch itself uses
+`std::vector` for `beginShape` geometry. The costs, all in this directory:
+
+- `newlib_syscalls.cc` — `_sbrk` over the linker script's 8 MB `.heap`
+  region (after `.bss`, before the stacks, so exhaustion is ENOMEM rather
+  than a corrupted stack), plus the stdio syscalls libstdc++'s error paths
+  want; `_write` goes to the UART so abort messages are visible.
+- `shared/newlib/libcpp_stub.cc` is deliberately **not** linked — its
+  trap-loop `operator delete` would override the real malloc-backed one.
+- `-nostartfiles` stays, so `startup.s` still owns boot (it already ran
+  `__libc_init_array`, so global constructors work as before).
+
 ## The pieces
 
 | file | what |
 | --- | --- |
-| `sketch.cc` | the Processing sketch: `sketch_setup()` + `sketch_draw()` |
-| `psketch.hh/.cc` | the Processing API surface (`background`, `fill`, `ellipse`, `rect`, `line`, `pushMatrix`, `random`, …) implemented as mini-GL calls |
-| `main.cc` | the harness: GPU + display bring-up, double-buffered vblank-flipped frame loop (modeled on `gpu-ltdc-demo`) |
+| `sketches/**/*.pde` | the Processing sketches, compiled as C++ |
+| `sketch_pde.cc` | includes generated prototypes + the selected `.pde` |
+| `tools/pde_prototypes.py` | forward-declaration generator |
+| `psketch.hh/.cc` | the Processing API surface (`background`, `fill`, `ellipse`, `beginShape`, `colorMode`, `pushMatrix`, `random`, …) implemented as mini-GL calls |
+| `newlib_syscalls.cc` | `_sbrk` + stdio hooks for the hosted build |
+| `main.cc` | the harness: GPU + display bring-up, double-buffered vblank-flipped frame loop (modeled on `gpu-ltdc-demo`), `frameRate()` throttling |
 
 `psketch` mirrors what processing.cpp's fixed-function renderer does: shapes
 tessellate on the CPU (`ellipse` → triangle fan, `rect` → quad, strokes → line
-loops), transforms go to the GL matrix stack, and `fill`/`stroke` are two
-persistent colors applied around each shape. Colors are 0–255, origin is
-top-left with +y down, and alpha blending is on by default — all Processing's
-defaults, so `fill(255, 204)` just works.
+loops, `beginShape` kinds → the matching GL primitive), transforms go to the
+GL matrix stack, and `fill`/`stroke` are two persistent colors applied around
+each shape. Colors go through `colorMode` (default RGB 0–255, HSB supported),
+origin is top-left with +y down, and alpha blending is on by default — all
+Processing's defaults, so `fill(255, 204)` just works. `mouseX`/`mouseY`
+exist but sit at the screen center until there is an input device. `size()`,
+`smooth()`/`noSmooth()` are accepted and ignored (the panel decides the size).
 
 When processing.cpp's own drawing functions get lifted onto mini-GL (the real
-plan), `psketch` is what they replace; `sketch.cc` would then compile against
-those instead.
+plan), `psketch` is what they replace; the `.pde` files would then compile
+against those instead.
 
-## What this exercised for the first time
+## What the first sketch exercised for the first time
 
 - **`GpuBackend::set_scanout()`** — the backend resolves each frame directly
   into the LTDC back buffer instead of its internal framebuffer, so display
   and mini-GL share no copies. Double-buffered, flipped at vblank.
 - **Batch overflow splitting** — a frame with more same-state geometry than
-  one batch buffer holds (4096 vertices) now splits into multiple backend
-  draws at a `glBegin`/`glEnd` boundary instead of dropping geometry. (Not hit
-  by this sketch — 12 fans is well under — but any denser sketch needs it;
-  covered by a host test.)
+  one batch buffer holds (4096 vertices) splits into multiple backend draws
+  at a `glBegin`/`glEnd` boundary instead of dropping geometry (covered by a
+  host test, and exercised for real by Radial_Gradient).
 
 ## Running
 
 ```bash
-make BOARD=devboard        # custom devboard: 720x1280 MIPI-DSI (ILI9881C)
-make                       # EV1: 1024x600 LVDS
-make flash-stlink          # or: make flash SD=/dev/diskX
+make BOARD=devboard [DEMO=sketches/....pde]  # devboard: 720x1280 MIPI-DSI
+make [DEMO=...]                              # EV1: 1024x600 LVDS
+make flash-stlink                            # or: make flash SD=/dev/diskX
 ```
 
-The sketch scales its ball sizes by `width/640` and gravity by `height/360`
-(the original is `size(640, 360)`), so it plays the same on either panel.
+Sketches written for `size(640, 360)` should draw from `width`/`height` to
+fill the panel; BouncyBubbles scales its ball sizes and gravity that way.
