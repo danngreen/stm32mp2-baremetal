@@ -47,17 +47,26 @@ Options, roughly in effort order:
   submit_and_wait'ed; the CPU could start the next frame's sim while the RS
   runs (needs a second RT or careful fencing).
 
+## Per-pixel sketches are CPU-bound
+
+`loadPixels()`/`pixels[]`/`updatePixels()` work, but the panel is 921,600
+pixels — 4x the 640x360 these sketches were written for. Noise_2D costs
+1.76 s/frame and Noise_3D ~1.0 s/frame, essentially all of it CPU Perlin
+noise plus the full-frame copy into the scanout buffer. Options: run the
+noise on the PPU (it is exactly the kind of per-pixel kernel the compute path
+already does — see gpu/'s PPU tests), or let a sketch render at its native
+size into a smaller buffer and upscale.
+
 ## Features known missing (stubs or absent)
 
-- `arc()` — needed by Pie_Chart, Shape_Primitives; a partial triangle fan,
-  small to add.
-- `PVector`, `ArrayList` equivalents — most Topics/simulate and vectors
-  sketches use them; a small header (`pvector.hh` + using std::vector)
-  would unlock a large group.
-- Perlin `noise()` — the Basics/math/Noise_* family.
-- `second()`/`minute()`/`hour()` — Clock; no RTC, could derive fake
-  wall-time from millis().
-- Text (`text()`, `textSize()`, fonts) — needs the texture path (gpu/ M3).
-- Images (`PImage`, `loadImage`) — texture path + a data source.
-- Mouse — `mouseX/mouseY` pinned to center; a real pointer needs an input
-  device (USB HID? encoder?). Key events work over the console UART.
+- Text (`text()`, `textSize()`, fonts) — accepted and ignored today, so
+  sketches run without their labels. Needs the texture path (gpu/ M3).
+- Images (`PImage`, `loadImage`) — texture path plus a data source.
+- Mouse — `mouseX`/`mouseY` are pinned to the screen centre and Enter on the
+  console synthesises a click. A real pointer needs an input device (USB HID?
+  encoder?). Key events already work over the console UART.
+- `PShape` / `loadShape`, `createGraphics` (FBOs, cheap — see gpu/ M4),
+  `bezier()`/`curve()`, `PImage`-based `filter()`.
+- 3D: `box()`, `sphere()`, `camera()`, `lights()`. The pipe has depth and a
+  real 3D path (gpu/'s spinning cube), so this is psketch-side work plus a
+  lighting shader.
