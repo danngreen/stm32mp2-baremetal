@@ -6,14 +6,13 @@
 //
 // The sketch is chosen by the DEMO make variable
 // (`make DEMO=sketches/Basics/color/Radial_Gradient.pde`) and is plain C++,
-// but two Processing-isms need handling first, both by
-// tools/pde_prototypes.py: Java ignores declaration order (so forward
-// declarations come first), and a sketch folder's several .pde "tabs" are one
-// translation unit, not separate ones (so every .pde in the folder is
-// included here, ordered so a class is defined before it is used).
+// but Java's indifference to declaration order is not, so
+// tools/pde_prototypes.py emits both halves: declarations first, then the
+// sketch body with its class definitions hoisted above the functions and
+// every .pde of the folder concatenated in dependency order.
 
 #include "pde_prototypes.hh"
-#include "pde_includes.hh"
+#include "pde_body.hh"
 
 void sketch_setup()
 {
