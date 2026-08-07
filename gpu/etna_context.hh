@@ -112,6 +112,7 @@ private:
 	struct Tracked {
 		uint32_t rt = 0, rt_stride = 0, depth = 0, depth_stride = 0;
 		uint32_t width = 0, height = 0;
+		uint32_t vp_scale_z = 0, vp_offset_z = 0; // as fui() bits
 		uint32_t alpha_config = 0, color_format = 0;
 		uint32_t depth_config = 0;
 		uint32_t pa_config = 0, line_width = 0, point_size = 0; // widths as fui() bits

@@ -184,9 +184,11 @@ bool mini_gl_test(etna::Gpu &gpu)
 		glVertex2f(x, y + 6);
 		glEnd();
 	}
-	const FrameStats st = mglFrameStats();
 	mglEndFrame();
 	const uint32_t ticks = uint32_t(read_cntpct() - t0);
+	// Stats read after mglEndFrame: the last batch is only handed to the
+	// backend (and counted) by the flush inside it.
+	const FrameStats st = mglFrameStats();
 
 	print("mini-GL batching: 100 quads -> ", st.batches, " batch(es), ", st.vertices, " verts, ",
 		  st.begin_end, " begin/end pairs, ", ticks, " ticks\n");
@@ -211,19 +213,21 @@ bool mini_gl_test(etna::Gpu &gpu)
 	glDisable(GL_BLEND);
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LESS);
+	// GL convention (and Processing's): the camera looks down -z, so +z is
+	// TOWARD the viewer. z=+0.5 is the near quad, z=-0.5 the far one.
 	glColor4f(1, 0, 0, 1); // near
-	glBegin(GL_QUADS);
-	glVertex3f(8, 8, -0.5f);
-	glVertex3f(56, 8, -0.5f);
-	glVertex3f(56, 56, -0.5f);
-	glVertex3f(8, 56, -0.5f);
-	glEnd();
-	glColor4f(0, 1, 0, 1); // farther: must be rejected
 	glBegin(GL_QUADS);
 	glVertex3f(8, 8, 0.5f);
 	glVertex3f(56, 8, 0.5f);
 	glVertex3f(56, 56, 0.5f);
 	glVertex3f(8, 56, 0.5f);
+	glEnd();
+	glColor4f(0, 1, 0, 1); // farther: must be rejected
+	glBegin(GL_QUADS);
+	glVertex3f(8, 8, -0.5f);
+	glVertex3f(56, 8, -0.5f);
+	glVertex3f(56, 56, -0.5f);
+	glVertex3f(8, 56, -0.5f);
 	glEnd();
 	glDisable(GL_DEPTH_TEST);
 	mglEndFrame();

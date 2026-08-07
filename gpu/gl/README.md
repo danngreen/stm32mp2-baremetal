@@ -69,6 +69,16 @@ does — flipping in the projection would double-flip those.
 becomes rows `[H-(y+h), H-y)`. Handled in `mini_gl_gpu.cc`. Getting this wrong
 looks plausible for a centred box and obviously wrong for anything else.
 
+And one range remap that is not a flip: **depth z**. GL clip z spans `[-1,1]`,
+but the depth buffer wants window z in `[0,1]`. The backend sets the draw's
+viewport z transform to scale/offset `0.5/0.5` — the `glDepthRange(0,1)`
+mapping, applied by the PA *after* the perspective divide, so it is correct for
+ortho and frustum alike. (The raw etna tests feed z in `[0,1]` directly and use
+the default `1.0/0.0`.) Without it, half the GL z range sits below the depth
+buffer's floor and the depth test silently misorders geometry. Conventions as
+in GL and Processing: the camera looks down −z, so **+z is toward the viewer**
+— `mini_gl_gpu_test.cc` proves the z=+0.5 quad occludes the z=−0.5 one.
+
 ## Testing
 
 Everything above the backend seam is pure computation, so it is tested on the

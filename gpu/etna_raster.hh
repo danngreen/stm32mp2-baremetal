@@ -60,10 +60,11 @@ struct Scissor {
 			return {true, 0, 0, width, height};
 		Scissor r{true, std::min(minx, width), std::min(miny, height), std::min(maxx, width),
 				  std::min(maxy, height)};
-		// Keep it well-formed; an inverted rect would otherwise wrap the fixp
-		// arithmetic in the SE registers.
-		r.maxx = std::max(r.maxx, r.minx);
-		r.maxy = std::max(r.maxy, r.miny);
+		// Canonicalize empty/inverted rects to [1,1)x[1,1): the SE registers
+		// take (max<<16)-1 for the exclusive edge (left > right rejects every
+		// pixel), and max = 0 would underflow that to a full-open scissor.
+		if (r.maxx <= r.minx || r.maxy <= r.miny)
+			return {true, 1, 1, 1, 1};
 		return r;
 	}
 
@@ -99,5 +100,10 @@ static_assert(Scissor{true, 8, 8, 999, 999}.resolved(64, 48).maxx == 64);
 static_assert(Scissor{true, 8, 8, 999, 999}.resolved(64, 48).maxy == 48);
 // An inverted rect collapses to empty rather than wrapping.
 static_assert(Scissor{true, 40, 40, 10, 10}.resolved(64, 48).empty());
+// Empty rects resolve away from 0 so (maxx<<16)-1 in the SE registers can
+// never underflow into a scissor that accepts everything.
+static_assert(Scissor{true, 0, 0, 0, 0}.resolved(64, 48).empty());
+static_assert(Scissor{true, 0, 0, 0, 0}.resolved(64, 48).maxx >= 1);
+static_assert(Scissor{true, 30, 30, 30, 30}.resolved(64, 48).empty());
 
 } // namespace etna

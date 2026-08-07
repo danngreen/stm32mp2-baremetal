@@ -226,13 +226,13 @@ void emit_triangle(CmdStream &cs,
 	// --- SE: scissor + clip = full target ------------------------------------
 	set_state_fixp(cs, SE_SCISSOR_LEFT, 0);
 	set_state_fixp(cs, SE_SCISSOR_TOP, 0);
-	set_state_fixp(cs, SE_SCISSOR_RIGHT, (width << 16) + SE_SCISSOR_MARGIN_RIGHT);
-	set_state_fixp(cs, SE_SCISSOR_BOTTOM, (height << 16) + SE_SCISSOR_MARGIN_BOTTOM);
+	set_state_fixp(cs, SE_SCISSOR_RIGHT, (width << 16) - 1);
+	set_state_fixp(cs, SE_SCISSOR_BOTTOM, (height << 16) - 1);
 	cs.set_state(SE_DEPTH_SCALE, 0);
 	cs.set_state(SE_DEPTH_BIAS, 0);
 	cs.set_state(SE_CONFIG, 0);
-	set_state_fixp(cs, SE_CLIP_RIGHT, (width << 16) + SE_CLIP_MARGIN_RIGHT);
-	set_state_fixp(cs, SE_CLIP_BOTTOM, (height << 16) + SE_CLIP_MARGIN_BOTTOM);
+	set_state_fixp(cs, SE_CLIP_RIGHT, (width << 16) - 1);
+	set_state_fixp(cs, SE_CLIP_BOTTOM, (height << 16) - 1);
 
 	// --- RA: rasterizer, depth off -------------------------------------------
 	cs.set_state(RA_CONTROL, 0x1);
@@ -398,13 +398,13 @@ void emit_triangle_color(CmdStream &cs,
 	// --- SE scissor + clip (same) --------------------------------------------
 	set_state_fixp(cs, SE_SCISSOR_LEFT, 0);
 	set_state_fixp(cs, SE_SCISSOR_TOP, 0);
-	set_state_fixp(cs, SE_SCISSOR_RIGHT, (width << 16) + SE_SCISSOR_MARGIN_RIGHT);
-	set_state_fixp(cs, SE_SCISSOR_BOTTOM, (height << 16) + SE_SCISSOR_MARGIN_BOTTOM);
+	set_state_fixp(cs, SE_SCISSOR_RIGHT, (width << 16) - 1);
+	set_state_fixp(cs, SE_SCISSOR_BOTTOM, (height << 16) - 1);
 	cs.set_state(SE_DEPTH_SCALE, 0);
 	cs.set_state(SE_DEPTH_BIAS, 0);
 	cs.set_state(SE_CONFIG, 0);
-	set_state_fixp(cs, SE_CLIP_RIGHT, (width << 16) + SE_CLIP_MARGIN_RIGHT);
-	set_state_fixp(cs, SE_CLIP_BOTTOM, (height << 16) + SE_CLIP_MARGIN_BOTTOM);
+	set_state_fixp(cs, SE_CLIP_RIGHT, (width << 16) - 1);
+	set_state_fixp(cs, SE_CLIP_BOTTOM, (height << 16) - 1);
 
 	// --- RA (same) -----------------------------------------------------------
 	cs.set_state(RA_CONTROL, 0x1);
@@ -561,13 +561,13 @@ void emit_triangle_tex(CmdStream &cs,
 	// --- SE scissor + clip ----------------------------------------------------
 	set_state_fixp(cs, SE_SCISSOR_LEFT, 0);
 	set_state_fixp(cs, SE_SCISSOR_TOP, 0);
-	set_state_fixp(cs, SE_SCISSOR_RIGHT, (width << 16) + SE_SCISSOR_MARGIN_RIGHT);
-	set_state_fixp(cs, SE_SCISSOR_BOTTOM, (height << 16) + SE_SCISSOR_MARGIN_BOTTOM);
+	set_state_fixp(cs, SE_SCISSOR_RIGHT, (width << 16) - 1);
+	set_state_fixp(cs, SE_SCISSOR_BOTTOM, (height << 16) - 1);
 	cs.set_state(SE_DEPTH_SCALE, 0);
 	cs.set_state(SE_DEPTH_BIAS, 0);
 	cs.set_state(SE_CONFIG, 0);
-	set_state_fixp(cs, SE_CLIP_RIGHT, (width << 16) + SE_CLIP_MARGIN_RIGHT);
-	set_state_fixp(cs, SE_CLIP_BOTTOM, (height << 16) + SE_CLIP_MARGIN_BOTTOM);
+	set_state_fixp(cs, SE_CLIP_RIGHT, (width << 16) - 1);
+	set_state_fixp(cs, SE_CLIP_BOTTOM, (height << 16) - 1);
 
 	// --- RA --------------------------------------------------------------------
 	cs.set_state(RA_CONTROL, 0x1);
@@ -692,6 +692,8 @@ Context::Tracked Context::snapshot(const MeshDraw &d)
 		.depth_stride = d.depth_stride,
 		.width = d.width,
 		.height = d.height,
+		.vp_scale_z = fui(d.vp_scale_z),
+		.vp_offset_z = fui(d.vp_offset_z),
 		.alpha_config = d.blend.pe_alpha_config(),
 		.color_format = d.blend.pe_color_format(),
 		// The depth word depends on whether a buffer is bound at all, so fold
@@ -721,7 +723,8 @@ uint32_t Context::compute_dirty(const Tracked &t, const MeshDraw &d) const
 	uint32_t dirty = dirty_;
 
 	if (t.rt != cur_.rt || t.rt_stride != cur_.rt_stride || t.depth != cur_.depth ||
-		t.depth_stride != cur_.depth_stride || t.width != cur_.width || t.height != cur_.height)
+		t.depth_stride != cur_.depth_stride || t.width != cur_.width || t.height != cur_.height ||
+		t.vp_scale_z != cur_.vp_scale_z || t.vp_offset_z != cur_.vp_offset_z)
 		dirty |= DirtyFramebuffer;
 
 	if (t.alpha_config != cur_.alpha_config || t.color_format != cur_.color_format)
@@ -825,10 +828,10 @@ bool Context::draw(const MeshDraw &d)
 	if (dirty & DirtyFramebuffer) {
 		set_state_fixp(cs, PA_VIEWPORT_SCALE_X, fixp16(d.width / 2.0f));
 		set_state_fixp(cs, PA_VIEWPORT_SCALE_Y, fixp16(d.height / 2.0f));
-		cs.set_state(PA_VIEWPORT_SCALE_Z, fui(1.0f));
+		cs.set_state(PA_VIEWPORT_SCALE_Z, t.vp_scale_z);
 		set_state_fixp(cs, PA_VIEWPORT_OFFSET_X, fixp16(d.width / 2.0f));
 		set_state_fixp(cs, PA_VIEWPORT_OFFSET_Y, fixp16(d.height / 2.0f));
-		cs.set_state(PA_VIEWPORT_OFFSET_Z, fui(0.0f));
+		cs.set_state(PA_VIEWPORT_OFFSET_Z, t.vp_offset_z);
 	}
 
 	// --- PA raster state -----------------------------------------------------
@@ -853,8 +856,8 @@ bool Context::draw(const MeshDraw &d)
 	if (dirty & (DirtyScissor | DirtyFramebuffer)) {
 		set_state_fixp(cs, SE_SCISSOR_LEFT, t.sc_minx << 16);
 		set_state_fixp(cs, SE_SCISSOR_TOP, t.sc_miny << 16);
-		set_state_fixp(cs, SE_SCISSOR_RIGHT, (t.sc_maxx << 16) + SE_SCISSOR_MARGIN_RIGHT);
-		set_state_fixp(cs, SE_SCISSOR_BOTTOM, (t.sc_maxy << 16) + SE_SCISSOR_MARGIN_BOTTOM);
+		set_state_fixp(cs, SE_SCISSOR_RIGHT, (t.sc_maxx << 16) - 1);
+		set_state_fixp(cs, SE_SCISSOR_BOTTOM, (t.sc_maxy << 16) - 1);
 	}
 	if (dirty & DirtyStatic) {
 		cs.set_state(SE_DEPTH_SCALE, 0);
@@ -862,8 +865,8 @@ bool Context::draw(const MeshDraw &d)
 		cs.set_state(SE_CONFIG, 0);
 	}
 	if (dirty & (DirtyScissor | DirtyFramebuffer)) {
-		set_state_fixp(cs, SE_CLIP_RIGHT, (t.sc_maxx << 16) + SE_CLIP_MARGIN_RIGHT);
-		set_state_fixp(cs, SE_CLIP_BOTTOM, (t.sc_maxy << 16) + SE_CLIP_MARGIN_BOTTOM);
+		set_state_fixp(cs, SE_CLIP_RIGHT, (t.sc_maxx << 16) - 1);
+		set_state_fixp(cs, SE_CLIP_BOTTOM, (t.sc_maxy << 16) - 1);
 	}
 
 	// --- RA ------------------------------------------------------------------

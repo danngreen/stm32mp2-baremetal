@@ -70,6 +70,12 @@ struct MeshDraw {
 	std::span<const float> uniforms{}; // empty = none
 	uint32_t width = 0;
 	uint32_t height = 0;
+	// Viewport z transform: window_z = (clip_z / clip_w) * vp_scale_z +
+	// vp_offset_z, applied by the PA after the perspective divide. The default
+	// passes z straight through, i.e. the shader must produce z in [0,1] -- what
+	// every raw etna test does. A GL front end (NDC z in [-1,1]) wants 0.5/0.5.
+	float vp_scale_z = 1.0f;
+	float vp_offset_z = 0.0f;
 	uint32_t vertex_count = 0;
 	const Bo *depth = nullptr; // optional depth buffer (cleared by caller)
 	uint32_t depth_stride = 0;

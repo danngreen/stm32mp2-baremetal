@@ -72,14 +72,14 @@ We do two tests:
 
 
 ```
-RS fill (1024x1024) in 106120 ticks (2529 MB/s)   -- verified. \o/
-  vs. CPU fill (1024x1024) in 65341 ticks (4108 MB/s)
+RS fill (1024x1024) in 126156 ticks (2127 MB/s)   -- verified. \o/
+  vs. CPU fill (1024x1024) in 120035 ticks (2236 MB/s)
 ```
 
-The RS is about 1.6x slower at filling bytes in DDR RAM than a CPU memset
-(about ~106k ticks vs. ~65k ticks). GPUs are good at doing parallel operations,
-so this is the worst case test (as you'll see later, when you put the GPU to
-work, it's 10x or faster than the CPU). Also, the GPU runs asynchronously (so
+The RS is slightly slower at filling bytes in DDR RAM than a CPU memset
+(about ~126k ticks vs. ~120k ticks). GPUs are good at doing parallel
+operations, so this is the worst case test (as you'll see later, when you put
+the GPU to work, it's 10x or faster than the CPU). Also, the GPU runs asynchronously (so
 is basically "free") and won't dirty our CPU's L1/L2 data cache if we only
 intend to fill an area of a framebuffer that's directly displayed on a screen.
 It would be interesting to see if the HPDMA would be much faster if you needed
@@ -129,9 +129,9 @@ Here we are actually doing computation with GPU, so we see it's 6-7x faster than
 naive CPU implementation:
 
 ```
-Alpha-blended two 512x512 ARGB images (GPU) in 155468 ticks
+Alpha-blended two 512x512 ARGB images (GPU) in 164595 ticks
 GPU alpha-blended 512x512 ARGB (per-channel lerp) -- verified. \o/
-Same blend on the CPU in 1084726 ticks (CPU / GPU = 6.9x)
+Same blend on the CPU in 1074463 ticks (CPU / GPU = 6.5x)
 ```
 
 ## 3D — the graphics pipe (drawing triangles)
@@ -316,6 +316,14 @@ emits no `CLIP_LEFT`/`CLIP_TOP` -- the clip rect's origin is implicitly 0 and
 only the scissor carries the min corner. This is all Processing's `clip()`
 needs, since that is rectangular, so no stencil work is required.
 
+The exclusive max edge is emitted as `(max << 16) - 1`, the way current Mesa
+does. The first hardware run used the old etna_viv margins (`+0x1119` /
+`+0x1111`, `+0xffff` for clip) instead, and this core compares those
+INCLUSIVELY: every scissored draw grew by one row and one column, and an empty
+rect drew a single pixel. An empty rect also cannot be emitted naively --
+`(0 << 16) - 1` underflows into a scissor that accepts everything -- so
+`Scissor::resolved()` canonicalizes empty to `[1,1)x[1,1)`.
+
 **Depth** (`etna_depth.hh`) is `PE_DEPTH_CONFIG`, which is assembled from two
 independent groups: framebuffer-derived (`DEPTH_MODE`, `DEPTH_FORMAT`, `UNK18`)
 and depth-state-derived (`DEPTH_FUNC`, `WRITE_ENABLE`, `EARLY_Z`,
@@ -484,75 +492,71 @@ etna: GPU mem-clock ~600 MHz
 etna: GC model 0x8000 rev 0x6205 (product 0x80003, customer 0x15)
 
 RS Engine tests:
-RS fill (1024x1024) in 106120 ticks (2529 MB/s)   -- verified. \o/
-  vs. CPU fill (1024x1024) in 65341 ticks (4108 MB/s)
-RS blit+convert (1024x1024) in 607153 ticks
+RS fill (1024x1024) in 126156 ticks (2127 MB/s)   -- verified. \o/
+  vs. CPU fill (1024x1024) in 120035 ticks (2236 MB/s)
+RS blit+convert (1024x1024) in 653589 ticks
 GPU copied 1024x1024, swapping R<->B -- verified. \o/
-Ring throughput (16 x 64x64 clears): sequential 5269 ticks, pipelined 3336 ticks
+Ring throughput (16 x 64x64 clears): sequential 9109 ticks, pipelined 7427 ticks
 
 PPU compute/shader tests:
-GPU copy over 64x6 (384 bytes) in 422 ticks -- verified. \o/
-GPU copy over 128x32 (4096 bytes) in 618 ticks -- verified. \o/
-GPU copy over 256x64 (16384 bytes) in 1170 ticks -- verified. \o/
-GPU copy over 32x4 (128 bytes) in 353 ticks -- verified. \o/
-GPU add(out=in+in) over 128x32 (4096 bytes) in 529 ticks -- verified. \o/
-GPU addsat(min(in+in,255)) over 128x32 (4096 bytes) in 531 ticks -- verified. \o/
-GPU add2(A+B, ramp+inv=255) over 128x32 (4096 bytes) in 786 ticks -- verified. \o/
-GPU blend-add(sat(A+B)) over 128x32 (4096 bytes) in 770 ticks -- verified. \o/
-GPU and(in & 0x0F, imm) over 64x6 (384 bytes) in 355 ticks -- verified. \o/
-GPU flop-reset(dp2x8, const in) over 64x6 (384 bytes) in 385 ticks -- verified. \o/
-GPU mul2((A*B)&0xFF) over 64x6 (384 bytes) in 456 ticks -- verified. \o/
-GPU mulhi2(mul_hi(A,B)) over 64x6 (384 bytes) in 474 ticks -- verified. \o/
-GPU not(~in) over 64x6 (384 bytes) in 437 ticks -- verified. \o/
-GPU blend-lerp(a*A + b*(1-A)) over 128x32 (4096 bytes) in 947 ticks -- verified. \o/
-Alpha-blended two 512x512 ARGB images (GPU) in 155770 ticks
+GPU copy over 64x6 (384 bytes) in 416 ticks -- verified. \o/
+GPU copy over 128x32 (4096 bytes) in 563 ticks -- verified. \o/
+GPU copy over 256x64 (16384 bytes) in 1286 ticks -- verified. \o/
+GPU copy over 32x4 (128 bytes) in 357 ticks -- verified. \o/
+GPU add(out=in+in) over 128x32 (4096 bytes) in 557 ticks -- verified. \o/
+GPU addsat(min(in+in,255)) over 128x32 (4096 bytes) in 546 ticks -- verified. \o/
+GPU add2(A+B, ramp+inv=255) over 128x32 (4096 bytes) in 780 ticks -- verified. \o/
+GPU blend-add(sat(A+B)) over 128x32 (4096 bytes) in 777 ticks -- verified. \o/
+GPU and(in & 0x0F, imm) over 64x6 (384 bytes) in 374 ticks -- verified. \o/
+GPU flop-reset(dp2x8, const in) over 64x6 (384 bytes) in 386 ticks -- verified. \o/
+GPU mul2((A*B)&0xFF) over 64x6 (384 bytes) in 418 ticks -- verified. \o/
+GPU mulhi2(mul_hi(A,B)) over 64x6 (384 bytes) in 424 ticks -- verified. \o/
+GPU not(~in) over 64x6 (384 bytes) in 377 ticks -- verified. \o/
+GPU blend-lerp(a*A + b*(1-A)) over 128x32 (4096 bytes) in 937 ticks -- verified. \o/
+Alpha-blended two 512x512 ARGB images (GPU) in 164595 ticks
 GPU alpha-blended 512x512 ARGB (per-channel lerp) -- verified. \o/
-Same blend on the CPU in 1084172 ticks (CPU / GPU = 6.9x)
+Same blend on the CPU in 1074463 ticks (CPU / GPU = 6.5x)
 
 3D tests:
-3D triangle drawn in 510 ticks
+3D triangle drawn in 521 ticks
 RT: 1301 of 4096 pixels drawn, color 0xFFFF0000 (uniform)
 GPU drew a solid triangle in 0xFFFF0000 -- 3D pipe verified. \o/
-RS resolve (untile 64x64) in 417 ticks
+RS resolve (untile 64x64) in 972 ticks
 shape: exact (NDC +Y = increasing framebuffer rows)
 resolved image matches the expected triangle -- shape verified. \o/
-gradient triangle drawn in 605 ticks
+gradient triangle drawn in 590 ticks
 RT: 1301 of 4096 pixels drawn. corners seen R=1 G=1 B=1 (varied)
 GPU interpolated a per-vertex-color varying across the triangle. \o/
-depth: two triangles drawn in 944 ticks
+depth: two triangles drawn in 1328 ticks
 depth test: 1951 drawn -> 1301 red (near), 650 green (far)
 GPU depth test occluded the farther triangle -- depth buffer works. \o/
-textured triangle drawn in 669 ticks
+textured triangle drawn in 1075 ticks
 texture test: 1301 drawn -> R=469 G=494 B=156 W=182 other=0
 GPU sampled a 2D texture across the triangle -- texturing works. \o/
-(in the blend and primitive blocks below, values marked NNN are placeholders
- until a board run. The triangle strip/fan counts and all the bounding boxes
- ARE predicted -- they come from a CPU rasterisation of the same geometry --
- so a mismatch there is a real signal, not just an unfilled placeholder.)
-blend: two quads drawn in NNNN ticks (PE_ALPHA_CONFIG 0x05400541)
-  A only (opaque red) at (12,32): expect 0xFFFF0000 ok (max delta N)
-  A n B (green over red) at (32,32): expect 0xBF808000 ok (max delta N)
-  B only (green over blue) at (51,32): expect 0xBF008080 ok (max delta N)
-  untouched (clear blue) at (51,57): expect 0xFF0000FF ok (max delta N)
+blend: two quads drawn in 1551 ticks (PE_ALPHA_CONFIG 0x5400541)
+  A only (opaque red) at (12,32): expect 0xFFFF0000 ok (max delta 0)
+  A n B (green over red) at (32,32): expect 0xBF808000 ok (max delta 0)
+  B only (green over blue) at (51,32): expect 0xBF008080 ok (max delta 0)
+  untouched (clear blue) at (51,57): expect 0xFF0000FF ok (max delta 0)
 GPU alpha-blended over two different destinations -- PE blending works. \o/
 primitive types:
   TRIANGLES    : 528 px bbox x[16..47] y[16..47] (1 prims)
   TRIANGLE_STRIP: 1024 px bbox x[16..47] y[16..47] (2 prims)
   TRIANGLE_FAN : 1024 px bbox x[16..47] y[16..47] (2 prims)
-  LINES        : NNN px bbox x[16..48] y[32..32] (1 prims)
-  LINE_STRIP   : NNN px bbox x[12..51] y[12..51] (2 prims)
-  LINE_LOOP    : NNN px bbox x[12..51] y[12..51] (3 prims)
-  POINTS       : NNN px bbox x[16..48] y[16..48] (4 prims)
+  LINES        : 32 px bbox x[16..47] y[32..32] (1 prims)
+  LINE_STRIP   : 77 px bbox x[13..51] y[13..51] (2 prims)
+  LINE_LOOP    : 114 px bbox x[13..51] y[13..51] (3 prims)
+  POINTS       : 4 px bbox x[16..48] y[16..48] (4 prims)
 GPU assembled points, lines, line strips/loops, and triangle strips/fans. \o/
 face culling:
-  ccw verts, cull off  : NNN px bbox x[..] y[..]
-  ccw verts, cull back : NNN px
-  ccw verts, cull front: NNN px
-  cw  verts, cull back : NNN px
-  cw  verts, cull front: NNN px
-  ccw verts, cull back, frontFace=CW : NNN px
-  ccw verts, cull front, frontFace=CW: NNN px
-  observed: with frontFace=CCW, a CCW-in-NDC triangle is ???-facing in window space
+  ccw verts, cull off  : 1013 px bbox x[10..54] y[10..54]
+  ccw verts, cull back : 0 px
+  ccw verts, cull front: 1013 px bbox x[10..54] y[10..54]
+  cw  verts, cull back : 1013 px bbox x[10..54] y[10..54]
+  cw  verts, cull front: 0 px
+  ccw verts, cull back, frontFace=CW : 1013 px bbox x[10..54] y[10..54]
+  ccw verts, cull front, frontFace=CW: 0 px
+  observed: with frontFace=CCW, a CCW-in-NDC triangle is BACK-facing in window space
 GPU culled by winding, and glFrontFace flips it. \o/
 scissor:
   disabled      : 4096 px bbox x[0..63] y[0..63]
@@ -562,35 +566,35 @@ scissor:
   empty         : 0 px
 GPU clipped to the scissor rectangle. \o/
 depth compare functions (red at z=0.5, then green at z=0.7):
-  LESS     : got 0xFFFF0000 expect 0xFFFF0000  ok
-  GREATER  : got 0xFF00FF00 expect 0xFF00FF00  ok
-  ALWAYS   : got 0xFF00FF00 expect 0xFF00FF00  ok
-  NEVER    : got 0xFFFF0000 expect 0xFFFF0000  ok
-  LEQUAL   : got 0xFFFF0000 expect 0xFFFF0000  ok
-  GEQUAL   : got 0xFF00FF00 expect 0xFF00FF00  ok
+  LESS    : got 0xFFFF0000 expect 0xFFFF0000  ok
+  GREATER : got 0xFF00FF00 expect 0xFF00FF00  ok
+  ALWAYS  : got 0xFF00FF00 expect 0xFF00FF00  ok
+  NEVER   : got 0xFFFF0000 expect 0xFFFF0000  ok
+  LEQUAL  : got 0xFFFF0000 expect 0xFFFF0000  ok
+  GEQUAL  : got 0xFF00FF00 expect 0xFF00FF00  ok
   depth mask: after z=0.3 (write off) then z=0.4, centre is 0xFF0000FF expect 0xFF0000FF
 GPU honoured all six depth compare functions and the depth write mask. \o/
 batching (24 same-state quads):
-  per-draw dwords: first NNN, subsequent NNN
-  total stream NNN dwords for 24 draws
-  unbatched NNN ticks (24 submits), batched NNN ticks (1 submit) -- N.Nx
-  uniform-changing batch: per-draw dwords first NNN, subsequent NNN; NNN ticks (each draw costs an FE->PE stall -- expected)
+  per-draw dwords: first 236, subsequent 10
+  total stream 476 dwords for 24 draws
+  unbatched 11828 ticks (24 submits), batched 3310 ticks (1 submit) -- 3.5x
+  uniform-changing batch: per-draw dwords first 254, subsequent 44; 5463 ticks (each draw costs an FE->PE stall -- expected)
 GPU batched 24 draws into one submission, pixel-identical to per-draw submits. \o/
 mini-GL orientation: rect(4,4,24,24) -> (16,16)=0xFFFF0000 (16,48)=0xFF000000
-mini-GL blend: red 0xFFFF0000 green/red 0xFF808000 green/blue 0xFF008080
+mini-GL blend: red 0xFFFF0000 green/red 0xBF808000 green/blue 0xBF008080
 mini-GL transform: translated(44,44)=0xFF00FF00 origin(8,8)=0xFF000000
-mini-GL batching: 100 quads -> 1 batch(es), 600 verts, 100 begin/end pairs, NNN ticks
+mini-GL batching: 100 quads -> 1 batch(es), 600 verts, 100 begin/end pairs, 11080 ticks
 mini-GL depth: near red then far green -> 0xFFFF0000
 mini-GL drew through the real pipe: orientation, blending, transforms, batching and depth. \o/
-cube frame 0: 658 px drawn, 0 mismatches (562 edge px ignored)
-cube frame 1: 761 px drawn, 0 mismatches (687 edge px ignored)
-cube frame 2: 721 px drawn, 0 mismatches (613 edge px ignored)
-cube frame 3: 715 px drawn, 0 mismatches (623 edge px ignored)
-cube frame 4: 635 px drawn, 0 mismatches (558 edge px ignored)
+cube frame 0: 658 px drawn, 0 mismatches (564 edge px ignored)
+cube frame 1: 771 px drawn, 0 mismatches (686 edge px ignored)
+cube frame 2: 739 px drawn, 0 mismatches (628 edge px ignored)
+cube frame 3: 735 px drawn, 0 mismatches (645 edge px ignored)
+cube frame 4: 658 px drawn, 0 mismatches (564 edge px ignored)
 cube frame 5: 771 px drawn, 0 mismatches (686 edge px ignored)
 cube frame 6: 739 px drawn, 0 mismatches (628 edge px ignored)
 cube frame 7: 735 px drawn, 0 mismatches (645 edge px ignored)
-spinning cube: 8 frames avg 1102 ticks (draw+resolve), faces seen 0x3F
+spinning cube: 8 frames avg 1753 ticks (draw+resolve), faces seen 0x3F
 GPU spun a cube: VS matrix transform + depth + rasterization all match the CPU. \o/
 
 SUCCESS

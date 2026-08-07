@@ -114,19 +114,19 @@ constexpr uint32_t PA_CONFIG_CULL_CW = 1u << 8;
 constexpr uint32_t PA_CONFIG_CULL_CCW = 2u << 8;
 
 // ---- SE (setup engine / scissor / clip) -------------------------------------
-constexpr uint32_t SE_SCISSOR_LEFT = 0x0C00;   // fixp16
-constexpr uint32_t SE_SCISSOR_TOP = 0x0C04;    // fixp16
-constexpr uint32_t SE_SCISSOR_RIGHT = 0x0C08;  // (maxx<<16)+0x1119
-constexpr uint32_t SE_SCISSOR_BOTTOM = 0x0C0C; // (maxy<<16)+0x1111
+// The RIGHT/BOTTOM edges take (max<<16)-1 for an EXCLUSIVE max, matching
+// current Mesa. The old etna_viv margins (+0x1119/+0x1111/+0xffff) land in
+// [max, max+1) and this core compares inclusively against them: hardware-tested
+// here, they drew one extra row+column and gave an empty rect a pixel.
+constexpr uint32_t SE_SCISSOR_LEFT = 0x0C00;   // fixp16, minx<<16
+constexpr uint32_t SE_SCISSOR_TOP = 0x0C04;    // fixp16, miny<<16
+constexpr uint32_t SE_SCISSOR_RIGHT = 0x0C08;  // (maxx<<16)-1
+constexpr uint32_t SE_SCISSOR_BOTTOM = 0x0C0C; // (maxy<<16)-1
 constexpr uint32_t SE_DEPTH_SCALE = 0x0C10;
 constexpr uint32_t SE_DEPTH_BIAS = 0x0C14;
 constexpr uint32_t SE_CONFIG = 0x0C18;
-constexpr uint32_t SE_CLIP_RIGHT = 0x0C20;  // (maxx<<16)+0xffff
-constexpr uint32_t SE_CLIP_BOTTOM = 0x0C24; // (maxy<<16)+0xffff
-constexpr uint32_t SE_SCISSOR_MARGIN_RIGHT = 0x1119;
-constexpr uint32_t SE_SCISSOR_MARGIN_BOTTOM = 0x1111;
-constexpr uint32_t SE_CLIP_MARGIN_RIGHT = 0xFFFF;
-constexpr uint32_t SE_CLIP_MARGIN_BOTTOM = 0xFFFF;
+constexpr uint32_t SE_CLIP_RIGHT = 0x0C20;  // (maxx<<16)-1
+constexpr uint32_t SE_CLIP_BOTTOM = 0x0C24; // (maxy<<16)-1
 
 // ---- RA (rasterizer) --------------------------------------------------------
 constexpr uint32_t RA_CONTROL = 0x0E00;       // UNK0 = 1

@@ -232,6 +232,11 @@ void GpuBackend::draw(const BatchState &s, std::span<const float> verts, uint32_
 	d.ps_out_reg = 1;
 	d.width = w_;
 	d.height = h_;
+	// GL clip z is [-1,1]; the depth buffer wants window z in [0,1]. The PA
+	// applies this after the perspective divide, so it is the glDepthRange(0,1)
+	// mapping, correct for ortho and frustum alike.
+	d.vp_scale_z = 0.5f;
+	d.vp_offset_z = 0.5f;
 	d.vertex_count = vertex_count;
 	d.prim = to_prim(s.prim);
 	d.line_width = s.line_width;
