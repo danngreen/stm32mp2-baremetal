@@ -862,6 +862,227 @@ bool triangle_blend_test(Gpu &gpu)
 	return true;
 }
 
+// =============================================================================
+//  Primitive types
+// =============================================================================
+//
+// Exercises every primitive the FE can assemble (see etna_prim.hh for why
+// these seven and not GL_QUADS). Each sub-draw goes into a freshly cleared
+// target and is untiled, then reduced to a drawn-pixel count and bounding box.
+//
+// The assertions are deliberately about primitive *semantics* rather than
+// exact pixel counts, so they don't depend on rasterisation fill rules:
+//   - TRIANGLE_STRIP and TRIANGLE_FAN, given the same four corners in their
+//     respective orders, must cover the SAME quad -- so their counts must
+//     match each other, and their bounding box must be the quad.
+//   - LINE_LOOP closes back to the first vertex, so on the same three vertices
+//     it must draw strictly more than LINE_STRIP (3 edges vs 2).
+//   - LINES/POINTS are checked by where they land, via the bounding box.
+//
+// A line primitive that renders nothing is the specific failure to watch for:
+// that is the PA_CONFIG.WIDE_LINE trap described in etna_prim.hh.
+bool primitive_test(Gpu &gpu)
+{
+	constexpr uint32_t W = 64, H = 64;
+	constexpr uint32_t pw = (W + 15) & ~15u;
+	constexpr uint32_t ph = (H + 3) & ~3u;
+	constexpr uint32_t stride = pw * 4;
+	constexpr uint32_t rt_size = stride * ph;
+	constexpr uint32_t CLEAR = 0xFF000000; // opaque black
+
+	// NDC of a pixel's centre -- keeps points and thin lines off pixel
+	// boundaries, where which row they land in would be a coin flip.
+	auto ndc = [](float pixel) { return (pixel + 0.5f) / float(W) * 2.0f - 1.0f; };
+
+	// One vertex = pos vec3 + colour vec4 (emit_mesh's fixed layout). Every
+	// vertex is opaque white, so "drawn" is simply "not the clear colour".
+	auto vtx7 = [](float x, float y) { return std::array<float, 7>{x, y, 0.5f, 1.0f, 1.0f, 1.0f, 1.0f}; };
+
+	Bo rt = gpu.alloc(rt_size);
+	Bo vb = gpu.alloc(64 * 7 * 4); // room for plenty of vertices
+	Bo vsb = gpu.alloc(sizeof(kVsColorCode));
+	Bo psb = gpu.alloc(sizeof(kPsColorCode));
+	Bo lin = gpu.alloc(W * H * 4);
+	if (!rt || !vb || !vsb || !psb || !lin)
+		return false;
+
+	std::ranges::copy(kVsColorCode, vsb.span<uint32_t>().begin());
+	vsb.cpu_fini(RelocWrite);
+	std::ranges::copy(kPsColorCode, psb.span<uint32_t>().begin());
+	psb.cpu_fini(RelocWrite);
+
+	// What one sub-draw reports back.
+	struct Result {
+		uint32_t drawn = 0;
+		uint32_t min_x = W, max_x = 0, min_y = H, max_y = 0;
+		bool ok = false;
+	};
+
+	// Clear -> upload vertices -> draw -> resolve -> reduce.
+	auto run = [&](const char *name, etna::Primitive p, std::span<const float> verts, uint32_t nverts) {
+		Result r;
+
+		std::ranges::fill(rt.span<uint32_t>(), CLEAR);
+		rt.cpu_fini(RelocWrite);
+		std::ranges::copy(verts, vb.span<float>().begin());
+		vb.cpu_fini(RelocWrite);
+
+		if (!etna::valid_vertex_count(p, nverts)) {
+			print("  ", name, ": bad vertex count ", nverts, " for this primitive\n");
+			return r;
+		}
+
+		etna::MeshDraw d{
+			.rt = &rt,
+			.rt_stride = stride,
+			.vtx = &vb,
+			.vtx_stride = 28,
+			.vs = &vsb,
+			.vs_words = kVsColorCode.size(),
+			.vs_temps = 4,
+			.ps = &psb,
+			.ps_words = kPsColorCode.size(),
+			.ps_temps = 2,
+			.ps_out_reg = 1,
+			.width = W,
+			.height = H,
+			.vertex_count = nverts,
+			.prim = p,
+		};
+
+		auto cs = gpu.new_cmd_stream(1024);
+		etna::emit_mesh(cs, d);
+		if (!gpu.submit_and_wait(cs)) {
+			gpu.dump_status("primitive draw");
+			return r;
+		}
+
+		std::ranges::fill(lin.span<uint32_t>(), CLEAR);
+		lin.cpu_fini(RelocWrite);
+		auto cs_r = gpu.new_cmd_stream(256);
+		resolve(cs_r, lin, rt, W, H, stride, W * 4);
+		if (!gpu.submit_and_wait(cs_r)) {
+			gpu.dump_status("primitive resolve");
+			return r;
+		}
+		lin.cpu_prep(RelocRead);
+
+		auto img = lin.span<const uint32_t>();
+		for (uint32_t y = 0; y < H; y++)
+			for (uint32_t x = 0; x < W; x++)
+				if (img[y * W + x] != CLEAR) {
+					r.drawn++;
+					r.min_x = std::min(r.min_x, x);
+					r.max_x = std::max(r.max_x, x);
+					r.min_y = std::min(r.min_y, y);
+					r.max_y = std::max(r.max_y, y);
+				}
+
+		print("  ", name, ": ", r.drawn, " px");
+		if (r.drawn)
+			print(" bbox x[", r.min_x, "..", r.max_x, "] y[", r.min_y, "..", r.max_y, "]");
+		print(" (", etna::primitive_count(p, nverts), " prims)\n");
+		r.ok = true;
+		return r;
+	};
+
+	// --- geometry -------------------------------------------------------------
+	// An axis-aligned quad spanning ndc [-0.5,0.5]^2 -> pixels [16..48].
+	const auto BL = vtx7(-0.5f, -0.5f), BR = vtx7(0.5f, -0.5f);
+	const auto TR = vtx7(0.5f, 0.5f), TL = vtx7(-0.5f, 0.5f);
+	auto pack = [](std::initializer_list<std::array<float, 7>> vs) {
+		std::array<float, 8 * 7> out{};
+		uint32_t w = 0;
+		for (const auto &v : vs)
+			for (float f : v)
+				out[w++] = f;
+		return out;
+	};
+
+	const auto strip_quad = pack({BL, BR, TL, TR}); // strip: (BL,BR,TL) + (TL,BR,TR)
+	const auto fan_quad = pack({BL, BR, TR, TL});   // fan:   (BL,BR,TR) + (BL,TR,TL)
+
+	// A triangle outline for the strip-vs-loop comparison.
+	const auto outline = pack({vtx7(-0.6f, -0.6f), vtx7(0.6f, -0.6f), vtx7(0.0f, 0.6f)});
+
+	// A horizontal line along a pixel-centre row, spanning ndc x [-0.5, 0.5].
+	const auto hline = pack({vtx7(-0.5f, ndc(32)), vtx7(0.5f, ndc(32))});
+
+	// Four points at pixel centres 16 and 48 in each axis.
+	const auto points = pack({vtx7(ndc(16), ndc(16)), vtx7(ndc(48), ndc(16)), vtx7(ndc(48), ndc(48)),
+							  vtx7(ndc(16), ndc(48))});
+
+	print("primitive types:\n");
+	auto r_tris = run("TRIANGLES    ", etna::Primitive::Triangles, strip_quad, 3);
+	auto r_strip = run("TRIANGLE_STRIP", etna::Primitive::TriangleStrip, strip_quad, 4);
+	auto r_fan = run("TRIANGLE_FAN ", etna::Primitive::TriangleFan, fan_quad, 4);
+	auto r_lines = run("LINES        ", etna::Primitive::Lines, hline, 2);
+	auto r_lstrip = run("LINE_STRIP   ", etna::Primitive::LineStrip, outline, 3);
+	auto r_lloop = run("LINE_LOOP    ", etna::Primitive::LineLoop, outline, 3);
+	auto r_points = run("POINTS       ", etna::Primitive::Points, points, 4);
+
+	for (const auto *r : {&r_tris, &r_strip, &r_fan, &r_lines, &r_lstrip, &r_lloop, &r_points})
+		if (!r->ok) {
+			print("FAILED: a primitive draw did not complete\n");
+			return false;
+		}
+
+	// Any primitive rendering nothing is a real failure. For the line types
+	// this is almost certainly PA_CONFIG.WIDE_LINE (etna_prim.hh).
+	const bool lines_empty = r_lines.drawn == 0 || r_lstrip.drawn == 0 || r_lloop.drawn == 0;
+	if (lines_empty) {
+		print("FAILED: a line primitive drew no pixels -- suspect PA_CONFIG.WIDE_LINE (bit 22)\n");
+		return false;
+	}
+	if (r_points.drawn == 0 || r_strip.drawn == 0 || r_fan.drawn == 0) {
+		print("FAILED: a primitive drew no pixels\n");
+		return false;
+	}
+
+	// Strip and fan describe the same quad, so they must agree with each other
+	// and cover pixels [16..48] in both axes.
+	if (r_strip.drawn != r_fan.drawn) {
+		print("FAILED: TRIANGLE_STRIP (", r_strip.drawn, " px) and TRIANGLE_FAN (", r_fan.drawn,
+			  " px) should cover the same quad\n");
+		return false;
+	}
+	if (r_strip.min_x > 17 || r_strip.max_x < 46 || r_strip.min_y > 17 || r_strip.max_y < 46) {
+		print("FAILED: strip/fan quad is not where it should be (expected about x[16..48] y[16..48])\n");
+		return false;
+	}
+	// Two triangles must beat the single one built from the same first 3 verts.
+	if (r_strip.drawn <= r_tris.drawn) {
+		print("FAILED: strip (2 triangles) should cover more than TRIANGLES (1 triangle)\n");
+		return false;
+	}
+
+	// LINE_LOOP adds the closing edge, so it must draw strictly more.
+	if (r_lloop.drawn <= r_lstrip.drawn) {
+		print("FAILED: LINE_LOOP (", r_lloop.drawn, " px) should exceed LINE_STRIP (", r_lstrip.drawn,
+			  " px) by the closing edge\n");
+		return false;
+	}
+
+	// The horizontal line must be flat and span the requested range.
+	if (r_lines.max_y - r_lines.min_y > 1) {
+		print("FAILED: horizontal LINES span ", r_lines.max_y - r_lines.min_y + 1, " rows, expected 1-2\n");
+		return false;
+	}
+	if (r_lines.min_x > 17 || r_lines.max_x < 46) {
+		print("FAILED: LINES bbox x[", r_lines.min_x, "..", r_lines.max_x, "] does not span the segment\n");
+		return false;
+	}
+
+	// The four points must sit at the corners of the [16..48] box.
+	if (r_points.min_x > 17 || r_points.max_x < 47 || r_points.min_y > 17 || r_points.max_y < 47) {
+		print("FAILED: POINTS did not land at the four expected corners\n");
+		return false;
+	}
+
+	print("GPU assembled points, lines, line strips/loops, and triangle strips/fans. \\o/\n");
+	return true;
+}
+
 // This test was made to help diagnose a rendering issue that ended up
 // being a result of the shader ALU not being reset (running a dp2x8 shader on boot
 // fixes it).

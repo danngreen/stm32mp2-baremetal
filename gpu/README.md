@@ -184,6 +184,13 @@ The tests are:
   block in each against a CPU reference. Blending over *two different*
   destinations is the point: it proves the pixel engine really re-read the
   render target instead of overwriting it.
+- primitive_test(): draws all seven primitive types and reduces each to a
+  drawn-pixel count and bounding box. The checks are about primitive
+  *semantics* rather than exact pixel counts, so they don't depend on
+  rasterisation fill rules: TRIANGLE_STRIP and TRIANGLE_FAN fed the same four
+  corners must cover the same quad (equal counts), LINE_LOOP must draw
+  strictly more than LINE_STRIP on the same three vertices (the closing edge),
+  and LINES/POINTS are checked by where their bounding box lands.
 
 
 ### Alpha blending
@@ -213,6 +220,52 @@ The constant-color factors (`BLEND_FUNC` 11..14) are deliberately not
 implemented: the old vendor `gceBLEND_FUNCTION` enum and Mesa/rnndb disagree
 on their ordering, and HALTI5 has a second fp16 blend-color register pair we
 have not verified. Nothing in the fixed-function GL path needs them.
+
+
+### Primitive types
+
+The draw command carries a primitive type, so points, lines and triangle
+strips/fans cost nothing extra -- they are the same command with a different
+field. `etna::Primitive` (`etna_prim.hh`) covers the seven the hardware
+assembles:
+
+| type | value | notes |
+| --- | --- | --- |
+| POINTS | 1 | size from `PA_POINT_SIZE` |
+| LINES | 2 | needs `WIDE_LINE`, see below |
+| LINE_STRIP | 3 | needs `WIDE_LINE` |
+| TRIANGLES | 4 | what everything used before |
+| TRIANGLE_STRIP | 5 | needs the `BugFixes8` core fix |
+| TRIANGLE_FAN | 6 | |
+| LINE_LOOP | 7 | needs the `LineLoop` core feature, needs `WIDE_LINE` |
+
+Mesa gates three of these on feature bits. Rather than guess, they were checked
+against Mesa's ST feature database
+(`src/etnaviv/hwdb/st/gc_feature_database.h`), which has an entry for our exact
+core -- `GCNANOULTRA31_VIP2`, ChipID 0x8000 / Rev 0x6205 / Product 0x80003 /
+Customer 0x15. It reports `REG_LineLoop = 1`, `REG_BugFixes8 = 1` and
+`REG_WideLine = 1`, so all seven types are usable here.
+
+**The `WIDE_LINE` trap.** rnndb annotates `PA_CONFIG` bit 22 with "MUST be set
+when drawing lines when WIDE_LINE feature available, otherwise GC3000+ will not
+render lines at all". Our core has the feature, so a line draw *without* this
+bit completes cleanly, faults nothing, and produces an empty target -- exactly
+the silent failure that is expensive to chase. `pa_config()` sets it for the
+three line types. Mesa sets it on every draw when the feature is present; we
+set it only for lines so triangle draws keep emitting the byte-identical
+`PA_CONFIG` the existing verified tests used (there is a `static_assert` for
+that).
+
+The three width registers (`PA_LINE_WIDTH`, `PA_WIDE_LINE_WIDTH0/1`) all take
+**half** the width, which is what the previously unexplained `fui(0.5f)` in the
+draw path meant: a line width of 1.0. `MeshDraw::line_width` / `point_size` now
+carry the real value and the halving happens at emit time.
+
+`GL_QUADS` is deliberately not exposed. The hardware does define a QUADS
+primitive (value 8) and Mesa's `translate_draw_mode()` maps to it, but Gallium
+never advertises it in `supported_prim_modes`, so that path is untested
+upstream. `expand_quads()` turns quad vertices into triangles on the CPU
+instead -- which a GL front end has to do for `GL_QUAD_STRIP` regardless.
 
 
 ### Spinning cube
@@ -344,14 +397,25 @@ GPU depth test occluded the farther triangle -- depth buffer works. \o/
 textured triangle drawn in 669 ticks
 texture test: 1301 drawn -> R=469 G=494 B=156 W=182 other=0
 GPU sampled a 2D texture across the triangle -- texturing works. \o/
-(blend lines below: probe positions and expected colors are computed, but the
- tick count and the measured deltas are placeholders until a board run)
+(in the blend and primitive blocks below, values marked NNN are placeholders
+ until a board run. The triangle strip/fan counts and all the bounding boxes
+ ARE predicted -- they come from a CPU rasterisation of the same geometry --
+ so a mismatch there is a real signal, not just an unfilled placeholder.)
 blend: two quads drawn in NNNN ticks (PE_ALPHA_CONFIG 0x05400541)
   A only (opaque red) at (12,32): expect 0xFFFF0000 ok (max delta N)
   A n B (green over red) at (32,32): expect 0xBF808000 ok (max delta N)
   B only (green over blue) at (51,32): expect 0xBF008080 ok (max delta N)
   untouched (clear blue) at (51,57): expect 0xFF0000FF ok (max delta N)
 GPU alpha-blended over two different destinations -- PE blending works. \o/
+primitive types:
+  TRIANGLES    : 528 px bbox x[16..47] y[16..47] (1 prims)
+  TRIANGLE_STRIP: 1024 px bbox x[16..47] y[16..47] (2 prims)
+  TRIANGLE_FAN : 1024 px bbox x[16..47] y[16..47] (2 prims)
+  LINES        : NNN px bbox x[16..48] y[32..32] (1 prims)
+  LINE_STRIP   : NNN px bbox x[12..51] y[12..51] (2 prims)
+  LINE_LOOP    : NNN px bbox x[12..51] y[12..51] (3 prims)
+  POINTS       : NNN px bbox x[16..48] y[16..48] (4 prims)
+GPU assembled points, lines, line strips/loops, and triangle strips/fans. \o/
 cube frame 0: 658 px drawn, 0 mismatches (562 edge px ignored)
 cube frame 1: 761 px drawn, 0 mismatches (687 edge px ignored)
 cube frame 2: 721 px drawn, 0 mismatches (613 edge px ignored)

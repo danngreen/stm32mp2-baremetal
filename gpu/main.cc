@@ -320,6 +320,8 @@ int main()
 	if (ok)
 		ok = triangle_blend_test(gpu);
 	if (ok)
+		ok = primitive_test(gpu);
+	if (ok)
 		ok = spinning_cube_test(gpu);
 
 	// Not needed, but interesting test

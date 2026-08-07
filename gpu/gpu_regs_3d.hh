@@ -103,6 +103,11 @@ constexpr uint32_t PA_VS_OUTPUT_COUNT = 0x0AA8;
 // PA_CONFIG bits: SHADE_MODEL_SMOOTH=0x10000, CULL_FACE_MODE_OFF=0,
 // FILL_MODE_SOLID=0x2000.
 constexpr uint32_t PA_CONFIG_TRIANGLE = 0x10000 | 0x2000;
+// PA_CONFIG bit 22. rnndb: "MUST be set when drawing lines when WIDE_LINE
+// feature available, otherwise GC3000+ will not render lines at all." Our core
+// reports REG_WideLine = 1, so line draws without this bit silently produce no
+// fragments. See etna_prim.hh::pa_config().
+constexpr uint32_t PA_CONFIG_WIDE_LINE = 0x400000;
 
 // ---- SE (setup engine / scissor / clip) -------------------------------------
 constexpr uint32_t SE_SCISSOR_LEFT = 0x0C00;   // fixp16

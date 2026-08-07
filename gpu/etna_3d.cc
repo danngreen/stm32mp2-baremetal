@@ -698,13 +698,20 @@ void emit_mesh(CmdStream &cs, const MeshDraw &d)
 	set_state_fixp(cs, PA_VIEWPORT_OFFSET_X, fixp16(d.width / 2.0f));
 	set_state_fixp(cs, PA_VIEWPORT_OFFSET_Y, fixp16(d.height / 2.0f));
 	cs.set_state(PA_VIEWPORT_OFFSET_Z, fui(0.0f));
-	cs.set_state(PA_LINE_WIDTH, fui(0.5f));
-	cs.set_state(PA_POINT_SIZE, fui(0.5f));
+	// All three width registers take HALF the width (Mesa: fui(line_width/2)).
+	// The defaults of 1.0 reproduce the fui(0.5f) these registers were pinned
+	// to before primitives existed.
+	const uint32_t half_line = fui(d.line_width / 2.0f);
+	cs.set_state(PA_LINE_WIDTH, half_line);
+	cs.set_state(PA_POINT_SIZE, fui(d.point_size / 2.0f));
 	cs.set_state(PA_SYSTEM_MODE, 0x1);
 	cs.set_state(PA_ATTRIBUTE_ELEMENT_COUNT, 1); // 1 varying
-	cs.set_state(PA_CONFIG, PA_CONFIG_TRIANGLE);
-	cs.set_state(PA_WIDE_LINE_WIDTH0, fui(0.5f));
-	cs.set_state(PA_WIDE_LINE_WIDTH1, fui(0.5f));
+	// Adds WIDE_LINE for line primitives -- without it they draw nothing at
+	// all on this core. See etna_prim.hh.
+	cs.set_state(PA_CONFIG, pa_config(d.prim));
+	// Consulted only when PA_CONFIG.WIDE_LINE is set; same value as PA_LINE_WIDTH.
+	cs.set_state(PA_WIDE_LINE_WIDTH0, half_line);
+	cs.set_state(PA_WIDE_LINE_WIDTH1, half_line);
 
 	// --- SE scissor + clip ------------------------------------------------------
 	set_state_fixp(cs, SE_SCISSOR_LEFT, 0);
@@ -809,7 +816,9 @@ void emit_mesh(CmdStream &cs, const MeshDraw &d)
 	cs.stall(SYNC_RECIPIENT_RA, SYNC_RECIPIENT_PE);
 
 	// --- DRAW --------------------------------------------------------------------
-	cs.emit(FE_DRAW_INSTANCED | (PRIM_TRIANGLES << 16) | 1);
+	// The count field is a VERTEX count regardless of primitive type; the
+	// hardware derives the primitive count itself.
+	cs.emit(FE_DRAW_INSTANCED | (static_cast<uint32_t>(d.prim) << 16) | 1);
 	cs.emit(d.vertex_count & 0x00FFFFFF);
 	cs.emit(0);
 	cs.emit(0);

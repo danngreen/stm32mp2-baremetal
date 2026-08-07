@@ -1,6 +1,7 @@
 #pragma once
 #include "etna.hh"
 #include "etna_blend.hh"
+#include "etna_prim.hh"
 #include <cstdint>
 #include <span>
 
@@ -70,7 +71,10 @@ struct MeshDraw {
 	uint32_t vertex_count = 0;
 	const Bo *depth = nullptr; // optional depth buffer (cleared by caller)
 	uint32_t depth_stride = 0;
-	BlendState blend{}; // default = off (bit-identical to the pre-blend path)
+	BlendState blend{};						   // default = off (bit-identical to the pre-blend path)
+	Primitive prim = Primitive::Triangles;	   // glBegin mode
+	float line_width = 1.0f;				   // line prims; PA registers take half this
+	float point_size = 1.0f;				   // point prims; likewise
 };
 void emit_mesh(CmdStream &cs, const MeshDraw &d);
 
