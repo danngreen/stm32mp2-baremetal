@@ -393,6 +393,13 @@ Two other sharp edges worth knowing:
   4096 dwords. `Gpu::submit()` previously wrapped by resetting the head, which
   for an oversized block would have copied past the end of the ring — silent
   memory corruption. It now refuses and says so.
+- **Ring wrap vs. the tail WAIT.** On wrap, the new block is copied from
+  offset 4 upward — and the tail WAIT the FE is *actively spinning on* can lie
+  inside that region. Overwriting the instruction under the FE wedges it at
+  that address forever (hardware-debugged via a sketch that submits
+  near-capacity blocks, where every wrap overlapped the tail). `submit()` now
+  rebuilds the home WAIT/LINK at offset 0 and parks the FE there before
+  overwriting the ring body.
 - **Context staleness.** Context tracks what *it* emitted. RS clears, blits and
   resolves don't touch 3D state, so they interleave freely; anything else that
   reprograms the pipe behind its back (a PPU compute dispatch does) must be
