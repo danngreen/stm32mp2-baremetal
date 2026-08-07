@@ -66,33 +66,82 @@ blew the 8 MB heap on Game of Life — and flushes emit in 4096-vertex
 combined projection×modelview matrix (rebuilt on any matrix change), so the
 unlit vertex path is one matrix multiply, not two.
 
-## Keyboard input
+## Input over the console
 
 Characters typed into the board's serial console (a minicom session on the
 UART) become Processing key events: each received byte sets `key`, fires the
 sketch's `keyPressed()`, and is echoed to the console (`key: 'r'`). The
 receiver is polled from the frame loop (`uart_getchar()` in
-`shared/print/uart_print.c`), so no interrupt plumbing was needed. There are
-no key-up events over a serial line, so `_keyPressed` is only true during the
-frame a byte arrived in — and the booleans are spelled `_keyPressed` /
-`_mousePressed` because C++ cannot give a variable and an event function the
-same name the way Processing's Java does.
+`shared/print/uart_print.c`), so no interrupt plumbing was needed.
 
-Also verified on hardware (first sweep, all vsync-locked unless the sketch
-sets its own frameRate): Star, Regular_Polygon, Sine_Cosine, Bounce, Linear,
-Recursion, Rotate, Tree, Wolfram, Brownian. Brownian's 2000 per-segment
-stroke colors still batch into **one** draw — deferred strokes carry color
-per segment, since color is a vertex attribute, not pipeline state.
+**Enter synthesises a mouse click** at the cursor, which is pinned to the
+screen centre until there is a real pointer. Without it a whole category of
+examples is unreachable — Multiple_Particle_Systems draws literally nothing
+until something calls `mousePressed()`.
+
+There are no key-up or button-up events over a serial line, so `_keyPressed`
+and `_mousePressed` are true only during the frame the event arrived in. They
+are spelled with the underscore because C++ cannot give a variable and an
+event function the same name the way Processing's Java does.
+
+Also verified on hardware, all vsync-locked at 58 fps unless noted:
+
+- **first sweep** — Star, Regular_Polygon, Sine_Cosine, Bounce, Linear,
+  Recursion, Rotate, Tree, Wolfram, Brownian. Brownian's 2000 per-segment
+  stroke colors still batch into **one** draw: deferred strokes carry color
+  per segment, since color is a vertex attribute, not pipeline state.
+- **second sweep** (PVector / noise / arc) — Flocking (300 draws/frame),
+  Simple_Particle_System, Multiple_Particle_Systems, Forces_With_Vectors,
+  Acceleration_With_Vectors, Bouncing_Ball, Vector_Math, Circle_Collision,
+  Reflection2, Morph, Moving_On_Curves, Bouncy_Bubbles, Noise_1D,
+  Noise_Wave, Random_Gaussian, Pie_Chart, Shape_Primitives, plus three that
+  are slow for their own reasons: Koch (683 ms/frame — it calls
+  `frameRate(1)` itself), and Noise_2D / Noise_3D (1.8 s and 1.0 s per
+  frame, CPU Perlin noise over 921,600 pixels — see TODO.md).
 
 ## How a .pde compiles
 
-Java ignores definition order; C++ does not. `tools/pde_prototypes.py`
-generates forward declarations for the sketch's top-level functions (the same
-job Processing's own preprocessor does), and `sketch_pde.cc` includes those,
-then the `.pde` itself, and maps `setup()`/`draw()` onto the harness. That is
-the whole pipeline — the `.pde` files themselves stay untouched, provided
-they are C++-compatible Processing code (the examples largely are; `fmod`
-instead of `%` on floats is the usual edit).
+`tools/pde_prototypes.py` does the three jobs Processing's own preprocessor
+does, and `sketch_pde.cc` includes its output:
+
+1. **Forward declarations.** Java ignores declaration order; C++ does not.
+   Functions, classes, and cross-tab globals are all declared up front.
+2. **One translation unit per sketch folder.** The editor's "tabs" are not
+   separate compilation units, so every `.pde` beside the selected one is
+   compiled with it — topologically ordered, because a class used as a base
+   or a value member must already be complete. (Flocking's `Boid` before
+   `Flock`; Multiple_Particle_Systems' `Particle` before `Crazy_Particle`,
+   which alphabetical order would get wrong.)
+3. **Static mode.** A sketch that is only a list of statements with no
+   `setup()`/`draw()` at all — Shape_Primitives, Points_and_Lines, most of
+   `Basics/control` — is wrapped into a `setup()` body. It draws once and the
+   render target persists, so the image stays up with 0 draws per frame.
+
+The `.pde` files themselves stay untouched, provided they are C++-compatible
+Processing code (the examples largely are; `fmod` instead of `%` on floats is
+the usual edit).
+
+## Java types the sketches assume
+
+`pvector.hh` supplies the three that appear everywhere, matching Processing's
+semantics rather than tidier C++ ones:
+
+- **`PVector`** — instance methods mutate *and* return `*this` so they chain
+  (`d.normalize().mult(k)` is real sketch code); the statics
+  (`PVector::sub(a, b)`) return a new vector and leave their operands alone.
+- **`ArrayList<T>`** — holds `T*`, because Java object references are
+  pointers and the converted sketches rely on it (`particles.get(i)->run()`).
+  `remove(i)` **deletes** the element: in Java that drops the last reference
+  and the GC reclaims it, and without it a particle system exhausts the 8 MB
+  heap in under an hour.
+- **`Array<T>`** — a fixed-size Java array. Its `.length` answers to both
+  `a.length` and `a.length()`, since the corpus uses both spellings.
+
+Processing's `circle()`/`square()` shorthands are deliberately absent: they
+are just `ellipse()`/`rect()` with equal dimensions, and as free functions
+they collide with the sketch variables of the same name (Morph declares
+`ArrayList<PVector> circle`) — Java keeps method and field namespaces apart,
+C++ does not.
 
 ## Dynamic memory
 
