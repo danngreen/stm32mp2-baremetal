@@ -421,11 +421,27 @@ Fence Gpu::submit(CmdStream &cs)
 		return {};
 	}
 
-	// Wrap if it won't fit. Safe only because callers wait for completion (the
-	// FE is parked at the current tail, far from offset 0) before reusing the
-	// ring start. A real free-cursor would let us wrap while work is queued.
-	if (ring_head_ + block_dw > ring_dwords_)
-		ring_head_ = 4; // keep the home wait-link at 0..3 intact
+	// Wrap if it won't fit. Callers wait for completion before submitting, so
+	// the only in-flight FE activity is the idle spin on the tail WAIT -- but
+	// that WAIT can sit INSIDE the region the new block is about to occupy
+	// (hardware-debugged: copying over the instruction the FE is spinning on
+	// wedges it at that address forever). So park the FE on the home WAIT/LINK
+	// at offset 0 first, then the copy below can touch anything from 4 up.
+	// The home words are rebuilt each time: the divert at the end of submit()
+	// turns whatever the FE waits on -- including offset 0 -- into a LINK.
+	if (ring_head_ + block_dw > ring_dwords_) {
+		ring[0] = cmd_wait(200);
+		ring[1] = 0;
+		ring[2] = cmd_link(2);
+		ring[3] = ring_base_; // home loop: LINK back to the WAIT at 0
+		dsb_sy();
+		ring[ring_tail_ + 1] = ring_base_;
+		dsb_sy();
+		ring[ring_tail_ + 0] = cmd_link(2);
+		dsb_sy();
+		ring_tail_ = 0;
+		ring_head_ = 4;
+	}
 
 	uint32_t start = ring_head_;
 	uint32_t w = start;
