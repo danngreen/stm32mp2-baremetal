@@ -18,6 +18,8 @@ using namespace mgl;
 
 int width = 0, height = 0, frameCount = 0;
 int mouseX = 0, mouseY = 0;
+int pmouseX = 0, pmouseY = 0;
+int mouseDX = 0, mouseDY = 0;
 char key = 0;
 int keyCode = 0;
 bool _keyPressed = false;
@@ -441,6 +443,19 @@ color::color(float gray, float alpha)
 color::color(float gray)
 	: color(gray, cmax[3])
 {}
+
+color lerpColor(int c1, int c2, float amt)
+{
+	amt = amt < 0 ? 0 : (amt > 1 ? 1 : amt);
+	float a[4], b[4];
+	unpack(c1, a);
+	unpack(c2, b);
+	for (int i = 0; i < 4; i++)
+		a[i] += (b[i] - a[i]) * amt;
+	color r;
+	r.v = pack(a);
+	return r;
+}
 
 void background(float r, float g, float b)
 {

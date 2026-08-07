@@ -6,6 +6,7 @@
 #include <vector>
 
 using String = std::string; // Processing's String
+using boolean = bool;		// Java's spelling, used verbatim by some sketches
 
 // =============================================================================
 //  psketch.hh -- the slice of the Processing API a sketch calls
@@ -28,7 +29,9 @@ using String = std::string; // Processing's String
 // --- globals ------------------------------------------------------------------
 extern int width, height;	// set by the harness from the panel size
 extern int frameCount;		// incremented by the harness after each draw()
-extern int mouseX, mouseY;	// no input device yet: pinned to the screen center
+extern int mouseX, mouseY;	 // no input device yet: pinned to the screen center
+extern int pmouseX, pmouseY; // previous frame's position -- equal to the above
+extern int mouseDX, mouseDY; // per-frame movement, so zero with a fixed cursor
 
 // Keyboard: characters typed into the console UART (e.g. a minicom session on
 // the board's serial port). Each received byte sets `key` and fires the
@@ -173,6 +176,56 @@ void noiseDetail(int octaves);
 void noiseDetail(int octaves, float falloff);
 void noiseSeed(unsigned s);
 
+// -----------------------------------------------------------------------------
+// Processing's IntList / FloatList / StringList: a resizable list with Java
+// method names. (ArrayList, in pvector.hh, is the one that holds objects by
+// pointer; these hold values.)
+template <typename T>
+struct NumList : std::vector<T> {
+	using Base = std::vector<T>;
+	using Base::Base;
+
+	int size() const
+	{
+		return static_cast<int>(Base::size());
+	}
+	T get(int i) const
+	{
+		return (*this)[i];
+	}
+	void set(int i, T v)
+	{
+		(*this)[i] = v;
+	}
+	void append(T v)
+	{
+		Base::push_back(v);
+	}
+	void remove(int i)
+	{
+		Base::erase(Base::begin() + i);
+	}
+	bool hasValue(T v) const
+	{
+		for (const T &e : *this)
+			if (e == v)
+				return true;
+		return false;
+	}
+	void shuffle() // Fisher-Yates on the sketch RNG
+	{
+		for (int i = size() - 1; i > 0; i--) {
+			const int j = static_cast<int>(random(float(i + 1)));
+			T tmp = (*this)[i];
+			(*this)[i] = (*this)[j];
+			(*this)[j] = tmp;
+		}
+	}
+};
+using IntList = NumList<int>;
+using FloatList = NumList<float>;
+using StringList = NumList<String>;
+
 int millis(); // ms since boot (the generic timer, not wall time)
 
 // Fake wall clock: there is no RTC, so this "time of day" starts at boot.
@@ -207,6 +260,9 @@ struct color {
 		return v;
 	}
 };
+
+// Blend two packed colors; amt 0..1. Straight lerp of the channels.
+color lerpColor(int c1, int c2, float amt);
 
 void background(float gray);
 void background(float r, float g, float b);
@@ -280,16 +336,15 @@ void updatePixels();
 // --- text ---------------------------------------------------------------------
 // Accepted and ignored: drawing glyphs needs the texture path (see TODO.md).
 // Sketches that label their output still run, just without the labels.
-inline void text(const char *, float, float)
+// Templated on what is being printed: sketches pass literals, ints, floats,
+// chars and Strings, and fixed overloads would make an int argument ambiguous
+// between the float and char ones.
+template <typename T>
+inline void text(T, float, float)
 {
 }
-inline void text(const char *, float, float, float, float)
-{
-}
-inline void text(float, float, float)
-{
-}
-inline void text(char, float, float)
+template <typename T>
+inline void text(T, float, float, float, float)
 {
 }
 inline void textAlign(int)

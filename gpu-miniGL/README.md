@@ -90,6 +90,14 @@ Also verified on hardware, all vsync-locked at 58 fps unless noted:
   Recursion, Rotate, Tree, Wolfram, Brownian. Brownian's 2000 per-segment
   stroke colors still batch into **one** draw: deferred strokes carry color
   per segment, since color is a vertex attribute, not pipeline state.
+- **fourth sweep** (`boolean` / `lerpColor` / `IntList`) — Points_and_Lines,
+  Bezier, Color_Variables, Simple_Linear_Gradient (33 fps: a per-row
+  `lerpColor` gradient), Logical_Operators, Distance_1D, Sine,
+  Multiple_Constructors, Functions, Loop, Translate, Milliseconds, Pentigree,
+  Penrose_Tile, Follow1, Reach1, IntList_Lottery_example, and three paced by
+  their own `frameRate()`: Double_Random and Koch at 1.01 s/frame
+  (`frameRate(1)`), Random at 515 ms (`frameRate(2)`). Graphing_2D_Equations
+  runs 363 ms/frame — another per-pixel sketch, see TODO.md.
 - **third sweep** (class hoisting / `color` type / bezier) — Array,
   Array_2D, Array_Objects, Additive_Wave, Arctangent, Polar_to_Cartesian,
   Sine_Wave, Linear_Interpolation, Distance_2D, Objects, Composite_Objects,
@@ -103,9 +111,10 @@ Also verified on hardware, all vsync-locked at 58 fps unless noted:
   Acceleration_With_Vectors, Bouncing_Ball, Vector_Math, Circle_Collision,
   Reflection2, Morph, Moving_On_Curves, Bouncy_Bubbles, Noise_1D,
   Noise_Wave, Random_Gaussian, Pie_Chart, Shape_Primitives, plus three that
-  are slow for their own reasons: Koch (683 ms/frame — it calls
-  `frameRate(1)` itself), and Noise_2D / Noise_3D (1.8 s and 1.0 s per
-  frame, CPU Perlin noise over 921,600 pixels — see TODO.md).
+  are slow for their own reasons: Koch (1.01 s/frame — it calls
+  `frameRate(1)` itself; its render is 4.8 ms), and Noise_2D / Noise_3D
+  (1.8 s and 1.0 s per frame, CPU Perlin noise over 921,600 pixels — see
+  TODO.md).
 
 ## How a .pde compiles
 
@@ -169,7 +178,12 @@ The math wrappers (`sqrt`, `sin`, `atan2`, `pow`, …) are templates rather
 than `float` overloads: a sketch writing `atan2(y - 5, x - 3)` on ints would
 otherwise be ambiguous against `<cmath>`'s float and double versions. A
 template loses to an exact non-template match, so genuine float and double
-calls still go straight to libm.
+calls still go straight to libm. `text()` is templated for the same reason —
+sketches print literals, ints, floats and Strings through it.
+
+`IntList` / `FloatList` / `StringList` (`NumList<T>`) hold values with Java's
+method names, and `boolean` and `String` are aliases, so sketches that were
+converted with Java spellings intact still compile.
 
 ## Dynamic memory
 

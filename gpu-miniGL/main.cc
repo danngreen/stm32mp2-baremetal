@@ -137,6 +137,7 @@ int main()
 	const uint32_t tick_khz = read_cntfreq() / 1000;
 	uint32_t worst_us = 0;
 	uint64_t next_render = 0;
+	bool started = false;
 
 	while (true) {
 		poll_keys();
@@ -189,26 +190,35 @@ int main()
 		ltdc_set_framebuffer(fbs[cur].gpu_addr()); // vblank-latched flip
 		cur ^= 1;
 
-		// Immediate feedback for slow sketches (frameRate(1) would otherwise
-		// stay silent for two minutes before the first stats line).
-		if (frames == 0)
-			print("first frame: ", render_us, " us, ", be.draws_submitted(), " draw(s), ", be.stream_dwords(),
-				  " dwords\n");
-		frames++;
-
 		// Report on a TIME interval, not a frame count: a sketch rendering at
 		// 1 fps would otherwise take two minutes to say anything, which reads
 		// as a hang. Average frame time is the honest number at any speed --
 		// fps alone rounds to 0 below one frame a second.
-		const auto now = read_cntpct();
-		const uint32_t elapsed_us = (now - t0) * 1000 / tick_khz;
-		if (elapsed_us >= 2000000) {
-			const uint32_t avg_us = elapsed_us / frames;
-			print(avg_us ? (1000000 + avg_us / 2) / avg_us : 0, " fps (avg ", avg_us, " us/frame, worst render ",
-				  worst_us, " us), ", be.draws_submitted(), " draw(s), ", be.stream_dwords(), " dwords\n");
-			t0 = now;
-			worst_us = 0;
+		//
+		// The measurement window starts at a COMPLETED frame, not at boot:
+		// `frames` counts intervals, so including the startup gap ahead of
+		// the first frame made a 1 fps sketch read as 1.5 fps.
+		if (!started) {
+			started = true;
+			// Immediate feedback for slow sketches (frameRate(1) would
+			// otherwise stay silent for two minutes).
+			print("first frame: ", render_us, " us, ", be.draws_submitted(), " draw(s), ", be.stream_dwords(),
+				  " dwords\n");
+			t0 = read_cntpct();
 			frames = 0;
+			worst_us = 0;
+		} else {
+			frames++;
+			const auto now = read_cntpct();
+			const uint32_t elapsed_us = (now - t0) * 1000 / tick_khz;
+			if (elapsed_us >= 2000000) {
+				const uint32_t avg_us = elapsed_us / frames;
+				print(avg_us ? (1000000 + avg_us / 2) / avg_us : 0, " fps (avg ", avg_us, " us/frame, worst render ",
+					  worst_us, " us), ", be.draws_submitted(), " draw(s), ", be.stream_dwords(), " dwords\n");
+				t0 = now;
+				worst_us = 0;
+				frames = 0;
+			}
 		}
 	}
 }
