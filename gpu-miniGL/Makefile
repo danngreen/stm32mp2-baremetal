@@ -78,8 +78,8 @@ include $(SHAREDDIR)/makefile-common.mk
 # Forward declarations + the ordered .pde include list. Regenerated when any
 # .pde in the sketch folder or the generator changes, and (via the config
 # stamp) when a different DEMO is selected.
-$(BUILDDIR)/pde_prototypes.hh $(BUILDDIR)/pde_includes.hh: $(DEMO_PDES) tools/pde_prototypes.py $(CONFIG_STAMP)
+$(BUILDDIR)/pde_prototypes.hh $(BUILDDIR)/pde_body.hh: $(DEMO_PDES) tools/pde_prototypes.py $(CONFIG_STAMP)
 	@mkdir -p $(BUILDDIR)
-	python3 tools/pde_prototypes.py $(DEMO) $(BUILDDIR)/pde_prototypes.hh $(BUILDDIR)/pde_includes.hh
+	python3 tools/pde_prototypes.py $(DEMO) $(BUILDDIR)/pde_prototypes.hh $(BUILDDIR)/pde_body.hh
 
-$(OBJDIR)/sketch_pde.o: $(BUILDDIR)/pde_prototypes.hh $(BUILDDIR)/pde_includes.hh
+$(OBJDIR)/sketch_pde.o: $(BUILDDIR)/pde_prototypes.hh $(BUILDDIR)/pde_body.hh
