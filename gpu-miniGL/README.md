@@ -38,6 +38,25 @@ The other current sketches exercise more of the surface:
   `beginShape(TRIANGLE_STRIP)`/`vertex`/`endShape`, sized by `mouseX`
   (pinned to the screen center until there is an input device). Two draws:
   the white fill batch and the black triangle-edge stroke batch.
+- `Topics/cellular_automata/Game_Of_Life/Game_Of_Life.pde` — 144×256 cells,
+  each a stroked rect, so fill/stroke alternate primitive classes every cell:
+  73,728 draws and 1.58M command dwords a frame, ~5 fps. This is the workload
+  that exposed (and now regression-tests) the ring-wrap-over-tail-WAIT bug in
+  `Gpu::submit()` — see the gpu/ README. Uses `millis()`, `color()`, the
+  packed-color `fill(int)`/`stroke(int)` overloads, and `keyPressed()`:
+  space pauses, `r` reseeds, `c` clears.
+
+## Keyboard input
+
+Characters typed into the board's serial console (a minicom session on the
+UART) become Processing key events: each received byte sets `key`, fires the
+sketch's `keyPressed()`, and is echoed to the console (`key: 'r'`). The
+receiver is polled from the frame loop (`uart_getchar()` in
+`shared/print/uart_print.c`), so no interrupt plumbing was needed. There are
+no key-up events over a serial line, so `_keyPressed` is only true during the
+frame a byte arrived in — and the booleans are spelled `_keyPressed` /
+`_mousePressed` because C++ cannot give a variable and an event function the
+same name the way Processing's Java does.
 
 ## How a .pde compiles
 
