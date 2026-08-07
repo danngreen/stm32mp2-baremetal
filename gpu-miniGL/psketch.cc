@@ -1,4 +1,5 @@
 #include "psketch.hh"
+#include "aarch64/system_reg.hh" // read_cntpct/read_cntfreq for millis()
 #include "gl/mini_gl.hh"
 #include <cstdint>
 #include <vector>
@@ -17,6 +18,24 @@ using namespace mgl;
 
 int width = 0, height = 0, frameCount = 0;
 int mouseX = 0, mouseY = 0;
+char key = 0;
+int keyCode = 0;
+bool _keyPressed = false;
+bool _mousePressed = false;
+
+// Weak no-op event handlers; a sketch that defines one overrides it.
+__attribute__((weak)) void keyPressed()
+{
+}
+__attribute__((weak)) void keyReleased()
+{
+}
+__attribute__((weak)) void mousePressed()
+{
+}
+__attribute__((weak)) void mouseReleased()
+{
+}
 
 namespace
 {
@@ -98,6 +117,12 @@ int ellipse_segments(float rmax)
 
 } // namespace
 
+// --- time ---------------------------------------------------------------------
+int millis()
+{
+	return int(read_cntpct() * 1000u / read_cntfreq());
+}
+
 // --- random -------------------------------------------------------------------
 float random(float hi)
 {
@@ -134,6 +159,50 @@ void colorMode(int mode)
 	color_mode = mode;
 }
 
+// --- packed colors (Processing's `color` type) --------------------------------
+namespace
+{
+int pack(const float c[4])
+{
+	auto u8 = [](float v) { return uint32_t(v * 255.0f + 0.5f) & 0xFFu; };
+	return int((u8(c[3]) << 24) | (u8(c[0]) << 16) | (u8(c[1]) << 8) | u8(c[2]));
+}
+// A packed color always has its alpha bits set (color() never produces
+// alpha 0 from default ranges); a bare gray level like fill(48) never does.
+bool is_packed(int c)
+{
+	return (uint32_t(c) & 0xFF000000u) != 0;
+}
+void unpack(int c, float out[4])
+{
+	out[0] = float((uint32_t(c) >> 16) & 0xFF) / 255.0f;
+	out[1] = float((uint32_t(c) >> 8) & 0xFF) / 255.0f;
+	out[2] = float(uint32_t(c) & 0xFF) / 255.0f;
+	out[3] = float((uint32_t(c) >> 24) & 0xFF) / 255.0f;
+}
+} // namespace
+
+int color(float r, float g, float b, float a)
+{
+	float c[4];
+	to_rgba(r, g, b, a, c);
+	return pack(c);
+}
+int color(float r, float g, float b)
+{
+	return color(r, g, b, cmax[3]);
+}
+int color(float gray, float alpha)
+{
+	float c[4];
+	gray_rgba(gray, alpha, c);
+	return pack(c);
+}
+int color(float gray)
+{
+	return color(gray, cmax[3]);
+}
+
 void background(float r, float g, float b)
 {
 	float c[4];
@@ -146,6 +215,17 @@ void background(float gray)
 	float c[4];
 	gray_rgba(gray, cmax[3], c);
 	glClearColor(c[0], c[1], c[2], 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+void background(int c)
+{
+	if (!is_packed(c)) {
+		background(float(c));
+		return;
+	}
+	float f[4];
+	unpack(c, f);
+	glClearColor(f[0], f[1], f[2], 1.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
@@ -166,6 +246,15 @@ void fill(float gray, float alpha)
 void fill(float gray)
 {
 	fill(gray, cmax[3]);
+}
+void fill(int c)
+{
+	if (!is_packed(c)) {
+		fill(float(c));
+		return;
+	}
+	fill_on = true;
+	unpack(c, fill_c);
 }
 void noFill()
 {
@@ -189,6 +278,15 @@ void stroke(float gray, float alpha)
 void stroke(float gray)
 {
 	stroke(gray, cmax[3]);
+}
+void stroke(int c)
+{
+	if (!is_packed(c)) {
+		stroke(float(c));
+		return;
+	}
+	stroke_on = true;
+	unpack(c, stroke_c);
 }
 void noStroke()
 {

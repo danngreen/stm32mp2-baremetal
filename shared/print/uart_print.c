@@ -56,10 +56,13 @@ typedef struct {
 
 #define USART ((stm32_usart_t *)USART_BASE)
 
-#define USART_CR1_UE (1u << 0)	// USART enable
-#define USART_CR1_RE (1u << 2)	// Receiver enable
-#define USART_CR1_TE (1u << 3)	// Transmitter enable
-#define USART_ISR_TXE (1u << 7) // Transmit data register empty
+#define USART_CR1_UE (1u << 0)	 // USART enable
+#define USART_CR1_RE (1u << 2)	 // Receiver enable
+#define USART_CR1_TE (1u << 3)	 // Transmitter enable
+#define USART_ISR_ORE (1u << 3)	 // Overrun error
+#define USART_ISR_RXNE (1u << 5) // Read data register not empty
+#define USART_ISR_TXE (1u << 7)	 // Transmit data register empty
+#define USART_ICR_ORECF (1u << 3) // Overrun error clear
 
 // The USART kernel clock is driven from HSI (64 MHz) via its RCC flexgen
 // channel, so the resulting baud rate does not depend on any PLL that TF-A may
@@ -150,6 +153,18 @@ void init_uart(void)
 	USART->PRESC = 0;
 	USART->BRR = UART_BRR;
 	USART->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
+}
+
+// Non-blocking console read: the next received byte, or -1 if none is
+// waiting. RX is polled, so if nobody called this while bytes arrived the
+// receiver sets its overrun flag -- clear it first or reception stalls.
+int uart_getchar(void)
+{
+	if (USART->ISR & USART_ISR_ORE)
+		USART->ICR = USART_ICR_ORECF;
+	if (!(USART->ISR & USART_ISR_RXNE))
+		return -1;
+	return (int)(USART->RDR & 0xFFu);
 }
 
 void putchar_s(char c)

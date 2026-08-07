@@ -25,6 +25,26 @@ extern int width, height;	// set by the harness from the panel size
 extern int frameCount;		// incremented by the harness after each draw()
 extern int mouseX, mouseY;	// no input device yet: pinned to the screen center
 
+// Keyboard: characters typed into the console UART (e.g. a minicom session on
+// the board's serial port). Each received byte sets `key` and fires the
+// keyPressed() event below.
+extern char key;
+extern int keyCode; // == key for printable keys; no escape-sequence decoding yet
+
+// Processing's `keyPressed`/`mousePressed` BOOLEANS. C++ cannot give a
+// variable and a function the same name, so sketches using the booleans must
+// spell them with the underscore; the event *functions* keep the real names.
+// A serial console has no key-up events, so _keyPressed is only true during
+// the frame in which a byte arrived.
+extern bool _keyPressed;
+extern bool _mousePressed; // no mouse: always false for now
+
+// Event handlers. Weak no-op defaults; a sketch that defines one overrides it.
+void keyPressed();
+void keyReleased(); // never fired yet (no key-up over a serial console)
+void mousePressed();
+void mouseReleased();
+
 // --- Processing constants (values from PConstants.java) -----------------------
 inline constexpr int RGB = 1;
 inline constexpr int HSB = 3;
@@ -124,6 +144,8 @@ inline float max(float a, float b)
 float random(float hi); // deterministic xorshift, seeded at boot
 float random(float lo, float hi);
 
+int millis(); // ms since boot (the generic timer, not wall time)
+
 // --- color and stroke state ---------------------------------------------------
 // Channels are interpreted through colorMode: default RGB with 0..255 ranges.
 // colorMode(HSB, 360, 100, 100) makes fill(h, s, b) hue-based, as in Processing.
@@ -131,17 +153,30 @@ void colorMode(int mode);
 void colorMode(int mode, float max);
 void colorMode(int mode, float max1, float max2, float max3);
 void colorMode(int mode, float max1, float max2, float max3, float maxA);
+
+// color() packs channels (interpreted through the current colorMode) into a
+// 0xAARRGGBB int, Processing's `color` type. The int overloads of
+// fill/stroke/background make Processing's distinction: a value with alpha
+// bits set is a packed color; a small bare int is a gray level.
+int color(float gray);
+int color(float gray, float alpha);
+int color(float r, float g, float b);
+int color(float r, float g, float b, float a);
+
 void background(float gray);
 void background(float r, float g, float b);
+void background(int c);
 void fill(float gray);
 void fill(float gray, float alpha);
 void fill(float r, float g, float b);
 void fill(float r, float g, float b, float a);
+void fill(int c); // packed color() value, or a gray level (see color())
 void noFill();
 void stroke(float gray);
 void stroke(float gray, float alpha);
 void stroke(float r, float g, float b);
 void stroke(float r, float g, float b, float a);
+void stroke(int c); // likewise
 void noStroke();
 void strokeWeight(float w);
 

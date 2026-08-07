@@ -38,10 +38,28 @@ constexpr uint32_t FbStride = HActive * 4;
 constexpr uint32_t FbSize = FbStride * VActive;
 } // namespace
 
+extern "C" int uart_getchar(void); // shared/print/uart_print.c, non-blocking
+
 void panic()
 {
 	while (true)
 		asm volatile("wfe");
+}
+
+// Drain the console UART into Processing key events: each typed character
+// (from a minicom session on the board's serial port) sets `key` and fires
+// the sketch's keyPressed(). Polled every loop spin so a frameRate()-throttled
+// sketch still gets its keys promptly.
+static void poll_keys()
+{
+	for (int c; (c = uart_getchar()) >= 0;) {
+		key = char(c);
+		keyCode = c;
+		_keyPressed = true;
+		const char echo[2] = {key, 0}; // print() has no char overload
+		print("key: '", echo, "'\n");
+		keyPressed();
+	}
 }
 
 int main()
@@ -98,6 +116,7 @@ int main()
 	uint64_t next_render = 0;
 
 	while (true) {
+		poll_keys();
 		if (!frame_ready.load(std::memory_order_acquire))
 			continue;
 		frame_ready.store(false, std::memory_order_release);
@@ -115,6 +134,7 @@ int main()
 		sketch_draw();
 		mglEndFrame();
 		frameCount++;
+		_keyPressed = false; // the "held" boolean lasts one frame per received byte
 
 		if (be.overflowed()) {
 			print("FAILED: backend out of arena or command stream\n");
