@@ -2,7 +2,10 @@
 #include "gl/mgl_math.hh" // for kPi; the wrappers below use real libm
 #include "pvector.hh"	  // PVector and ArrayList, assumed by most sketches
 #include <cmath>
+#include <string>
 #include <vector>
+
+using String = std::string; // Processing's String
 
 // =============================================================================
 //  psketch.hh -- the slice of the Processing API a sketch calls
@@ -79,33 +82,43 @@ inline constexpr float PI = mgl::kPi;
 inline constexpr float TWO_PI = 2 * mgl::kPi;
 inline constexpr float HALF_PI = mgl::kPi / 2;
 
-inline float sqrt(float x)
+// Templates, not plain float overloads: a sketch writing `atan2(y - 5, x - 3)`
+// on ints would otherwise be ambiguous between this and <cmath>'s float and
+// double versions. A template loses to an exact non-template match, so calls
+// with real floats or doubles still go straight to libm.
+template <typename T>
+inline float sqrt(T x)
 {
-	return ::sqrtf(x);
+	return ::sqrtf(float(x));
 }
-inline float sin(float x)
+template <typename T>
+inline float sin(T x)
 {
-	return ::sinf(x);
+	return ::sinf(float(x));
 }
-inline float cos(float x)
+template <typename T>
+inline float cos(T x)
 {
-	return ::cosf(x);
+	return ::cosf(float(x));
 }
-inline float tan(float x)
+template <typename T>
+inline float tan(T x)
 {
-	return ::tanf(x);
+	return ::tanf(float(x));
 }
-inline float atan2(float y, float x)
+template <typename A, typename B>
+inline float atan2(A y, B x)
 {
-	return ::atan2f(y, x);
+	return ::atan2f(float(y), float(x));
 }
 inline float abs(float x)
 {
 	return ::fabsf(x);
 }
-inline float pow(float x, float y)
+template <typename A, typename B>
+inline float pow(A x, B y)
 {
-	return ::powf(x, y);
+	return ::powf(float(x), float(y));
 }
 inline float dist(float x1, float y1, float x2, float y2)
 {
@@ -176,14 +189,24 @@ void colorMode(int mode, float max);
 void colorMode(int mode, float max1, float max2, float max3);
 void colorMode(int mode, float max1, float max2, float max3, float maxA);
 
-// color() packs channels (interpreted through the current colorMode) into a
-// 0xAARRGGBB int, Processing's `color` type. The int overloads of
-// fill/stroke/background make Processing's distinction: a value with alpha
-// bits set is a packed color; a small bare int is a gray level.
-int color(float gray);
-int color(float gray, float alpha);
-int color(float r, float g, float b);
-int color(float r, float g, float b, float a);
+// In Processing `color` is BOTH a type (`color c1, c2;`) and a
+// constructor-like function (`color(0, 200, 0)`) -- Java keeps those in
+// separate namespaces, C++ cannot. So it is a type whose constructors read
+// exactly like the calls, converting implicitly to the packed 0xAARRGGBB int
+// that fill()/stroke()/background() accept. Channels go through the current
+// colorMode, and a one-argument color() is a gray level, as in Processing.
+struct color {
+	int v = 0;
+	color() = default;
+	color(float gray);
+	color(float gray, float alpha);
+	color(float r, float g, float b);
+	color(float r, float g, float b, float a);
+	constexpr operator int() const
+	{
+		return v;
+	}
+};
 
 void background(float gray);
 void background(float r, float g, float b);
@@ -213,6 +236,9 @@ void rect(float x, float y, float w, float h);	 // interpreted per rectMode
 // declare (Morph has `ArrayList<PVector> circle`) -- Java keeps method and
 // field namespaces apart, C++ does not.
 void line(float x1, float y1, float x2, float y2);
+// A standalone cubic Bezier: (x1,y1) and (x4,y4) are the endpoints, the
+// middle pair the controls. Stroked, like Processing's.
+void bezier(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4);
 // Arc of the ellipse a/b/c/d (interpreted per ellipseMode), from `start` to
 // `stop` radians, clockwise on screen from the +x axis. Default mode OPEN
 // fills the region closed by the chord and strokes only the curve; CHORD adds
@@ -227,6 +253,10 @@ void point(float x, float y);
 void beginShape();		   // POLYGON
 void beginShape(int kind); // POINTS/LINES/TRIANGLES/TRIANGLE_STRIP/... above
 void vertex(float x, float y);
+// Cubic Bezier from the previous vertex, through two control points, to
+// (x, y) -- tessellated on the CPU into ordinary vertices.
+void bezierVertex(float cx1, float cy1, float cx2, float cy2, float x, float y);
+void bezierDetail(int n);
 void endShape();		   // open
 void endShape(int mode);   // CLOSE joins the last vertex back to the first
 

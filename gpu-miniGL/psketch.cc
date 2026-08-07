@@ -423,26 +423,24 @@ void unpack(int c, float out[4])
 }
 } // namespace
 
-int color(float r, float g, float b, float a)
+color::color(float r, float g, float b, float a)
 {
 	float c[4];
 	to_rgba(r, g, b, a, c);
-	return pack(c);
+	v = pack(c);
 }
-int color(float r, float g, float b)
-{
-	return color(r, g, b, cmax[3]);
-}
-int color(float gray, float alpha)
+color::color(float r, float g, float b)
+	: color(r, g, b, cmax[3])
+{}
+color::color(float gray, float alpha)
 {
 	float c[4];
 	gray_rgba(gray, alpha, c);
-	return pack(c);
+	v = pack(c);
 }
-int color(float gray)
-{
-	return color(gray, cmax[3]);
-}
+color::color(float gray)
+	: color(gray, cmax[3])
+{}
 
 void background(float r, float g, float b)
 {
@@ -750,6 +748,53 @@ void vertex(float x, float y)
 {
 	shape_pts.push_back(x);
 	shape_pts.push_back(y);
+}
+
+namespace
+{
+int bezier_detail = 20;
+
+// The cubic Bezier basis, evaluated at t.
+void bezier_point(float t, float x1, float y1, float cx1, float cy1, float cx2, float cy2, float x2, float y2,
+				  float &ox, float &oy)
+{
+	const float u = 1.0f - t;
+	const float b0 = u * u * u, b1 = 3 * u * u * t, b2 = 3 * u * t * t, b3 = t * t * t;
+	ox = b0 * x1 + b1 * cx1 + b2 * cx2 + b3 * x2;
+	oy = b0 * y1 + b1 * cy1 + b2 * cy2 + b3 * y2;
+}
+} // namespace
+
+void bezierDetail(int n)
+{
+	if (n > 0)
+		bezier_detail = n;
+}
+
+void bezierVertex(float cx1, float cy1, float cx2, float cy2, float x, float y)
+{
+	if (shape_pts.size() < 2) // no anchor to curve away from
+		return;
+	const float x1 = shape_pts[shape_pts.size() - 2], y1 = shape_pts.back();
+	for (int i = 1; i <= bezier_detail; i++) {
+		float px, py;
+		bezier_point(float(i) / float(bezier_detail), x1, y1, cx1, cy1, cx2, cy2, x, y, px, py);
+		vertex(px, py);
+	}
+}
+
+void bezier(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4)
+{
+	if (!stroke_on)
+		return;
+	float px = x1, py = y1;
+	for (int i = 1; i <= bezier_detail; i++) {
+		float qx, qy;
+		bezier_point(float(i) / float(bezier_detail), x1, y1, x2, y2, x3, y3, x4, y4, qx, qy);
+		defer_line(px, py, qx, qy);
+		px = qx;
+		py = qy;
+	}
 }
 
 namespace
