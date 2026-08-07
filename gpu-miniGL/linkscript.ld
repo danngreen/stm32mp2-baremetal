@@ -8,7 +8,7 @@ MEMORY
     ROM (rx) : ORIGIN = 0x88000000, LENGTH = 16M
 }
 
-__HEAP_SIZE = 0x40000;
+__HEAP_SIZE = 0x800000; /* 8 MB -- newlib malloc via _sbrk (sbrk.cc); sketches allocate freely */
 
 SECTIONS
 {

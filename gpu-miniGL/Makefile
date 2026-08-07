@@ -6,6 +6,7 @@ SOURCES := startup.s
 SOURCES += main.cc
 SOURCES += psketch.cc
 SOURCES += sketch.cc
+SOURCES += newlib_syscalls.cc
 # GPU library (etna API + 3D emitters) and mini-GL on top of it
 SOURCES += ../gpu/etna.cc
 SOURCES += ../gpu/etna_3d.cc
@@ -42,7 +43,6 @@ SOURCES += $(SHAREDDIR)/print/uart_print.c
 SOURCES += $(SHAREDDIR)/print/print.cc
 SOURCES += $(SHAREDDIR)/aarch64/esr_decode.cc
 SOURCES += $(SHAREDDIR)/newlib/syscall_stubs.c
-SOURCES += $(SHAREDDIR)/newlib/libcpp_stub.cc
 SOURCES += $(SHAREDDIR)/drivers/pin.cc
 SOURCES += $(SHAREDDIR)/STM32MP2xx_HAL_Driver/Src/stm32mp2xx_hal.c
 SOURCES += $(SHAREDDIR)/STM32MP2xx_HAL_Driver/Src/stm32mp2xx_hal_i2c.c
@@ -62,5 +62,6 @@ EXTRA_ARCH_CFLAGS := -DUSE_HAL_DRIVER
 OPTFLAG := -O2
 
 FREESTANDING := 
+LINK_STDLIB :=
 
 include $(SHAREDDIR)/makefile-common.mk
