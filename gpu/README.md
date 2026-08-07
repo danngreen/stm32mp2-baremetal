@@ -176,6 +176,43 @@ The tests are:
   span all four colors and we use a "NEAREST" filtering so that only exact
   colors from the texture will be used. Then we count how many pixels of 
   each color we found. Here we use a new shader opcode: TEXLD.
+- triangle_blend_test(): alpha blending (`glEnable(GL_BLEND)` +
+  `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`). Two overlapping quads:
+  an opaque red one with blending off, then a half-alpha green one with
+  blending on. That splits the target into four regions -- red only, green
+  over red, green over blue background, and untouched -- and we probe a 5x5
+  block in each against a CPU reference. Blending over *two different*
+  destinations is the point: it proves the pixel engine really re-read the
+  render target instead of overwriting it.
+
+
+### Alpha blending
+
+The pixel engine can blend a fragment with what is already in the render
+target, which is what `fill()` with an alpha value needs. Three registers
+control it (`PE_ALPHA_CONFIG` holds an enable bit, the four
+source/destination factors, and the two blend equations), but the subtle part
+is a fourth: `PE_COLOR_FORMAT` has an `OVERWRITE` bit that tells the PE it may
+skip *reading* the render target. Blending needs that read, so `OVERWRITE`
+must be cleared whenever blending is live. Getting that wrong fails silently
+-- the blend math runs against a stale destination.
+
+Both words are derived from one `etna::BlendState` (`etna_blend.hh`), ported
+from Mesa's `etna_blend_state_create()` / `etna_update_blend()`. It is all
+`constexpr`, so the encodings are proven at compile time -- including that a
+default (blending off) `BlendState` reproduces the exact register values the
+pipe used before blending existed, which makes the change provably a no-op for
+every earlier test.
+
+Two details carried over from Mesa: a blend state that is arithmetically a
+no-op (`ONE`/`ZERO`/`ADD`) leaves the blender off so the `OVERWRITE` fast path
+survives, and `BLEND_SEPARATE_ALPHA` is only set when the alpha-side factors
+actually differ from the color-side ones.
+
+The constant-color factors (`BLEND_FUNC` 11..14) are deliberately not
+implemented: the old vendor `gceBLEND_FUNCTION` enum and Mesa/rnndb disagree
+on their ordering, and HALTI5 has a second fp16 blend-color register pair we
+have not verified. Nothing in the fixed-function GL path needs them.
 
 
 ### Spinning cube
@@ -307,6 +344,14 @@ GPU depth test occluded the farther triangle -- depth buffer works. \o/
 textured triangle drawn in 669 ticks
 texture test: 1301 drawn -> R=469 G=494 B=156 W=182 other=0
 GPU sampled a 2D texture across the triangle -- texturing works. \o/
+(blend lines below: probe positions and expected colors are computed, but the
+ tick count and the measured deltas are placeholders until a board run)
+blend: two quads drawn in NNNN ticks (PE_ALPHA_CONFIG 0x05400541)
+  A only (opaque red) at (12,32): expect 0xFFFF0000 ok (max delta N)
+  A n B (green over red) at (32,32): expect 0xBF808000 ok (max delta N)
+  B only (green over blue) at (51,32): expect 0xBF008080 ok (max delta N)
+  untouched (clear blue) at (51,57): expect 0xFF0000FF ok (max delta N)
+GPU alpha-blended over two different destinations -- PE blending works. \o/
 cube frame 0: 658 px drawn, 0 mismatches (562 edge px ignored)
 cube frame 1: 761 px drawn, 0 mismatches (687 edge px ignored)
 cube frame 2: 721 px drawn, 0 mismatches (613 edge px ignored)

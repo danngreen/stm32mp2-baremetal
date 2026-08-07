@@ -1,5 +1,6 @@
 #pragma once
 #include "etna.hh"
+#include "etna_blend.hh"
 #include <cstdint>
 #include <span>
 
@@ -49,7 +50,8 @@ void emit_triangle_tex(CmdStream &cs,
 // attribute (stride 28), carried to the FS as one smooth vec4 varying;
 // optional float uniforms uploaded to the unified bank (VS u0.., base 0 --
 // e.g. a 4x4 transform as 4 column vec4s); optional D16 LESS depth test with
-// writes. Shader sizes are parametric (dwords; 4 per instruction).
+// writes; optional alpha blending (see etna_blend.hh). Shader sizes are
+// parametric (dwords; 4 per instruction).
 struct MeshDraw {
 	const Bo *rt = nullptr;
 	uint32_t rt_stride = 0;
@@ -68,6 +70,7 @@ struct MeshDraw {
 	uint32_t vertex_count = 0;
 	const Bo *depth = nullptr; // optional depth buffer (cleared by caller)
 	uint32_t depth_stride = 0;
+	BlendState blend{}; // default = off (bit-identical to the pre-blend path)
 };
 void emit_mesh(CmdStream &cs, const MeshDraw &d);
 

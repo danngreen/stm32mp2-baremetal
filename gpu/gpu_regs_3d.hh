@@ -179,6 +179,58 @@ constexpr uint32_t PE_DEPTH_CONFIG_D16_LESS_WRITE = 0x00041101;
 constexpr uint32_t PIPE_FUNC_LESS = 1;    // PE_DEPTH_CONFIG DEPTH_FUNC value
 constexpr uint32_t PIPE_FUNC_GREATER = 4; // (for the reverse-order sanity draw)
 
+// ---- PE alpha blending (glBlendFunc / glBlendEquation) ----------------------
+// Field layout from etna_viv rnndb state_3d.xml <reg32 name="ALPHA_CONFIG">,
+// cross-checked against Mesa src/etnaviv/hw/state_3d.xml.h. The register is
+// masked="yes": each field has a companion single-bit *_MASK write-enable at
+// the bit below/above it, where 1 = "leave this field alone". We re-emit the
+// whole register every draw, so every mask bit stays 0 and we can just OR the
+// value fields together.
+//
+//   bit 0    BLEND_ENABLE_COLOR      bit 1  BLEND_ENABLE_COLOR_MASK
+//   bit 2    SRC_FUNC_COLOR_MASK     bit 3  DST_FUNC_COLOR_MASK
+//   [7:4]    SRC_FUNC_COLOR          [11:8] DST_FUNC_COLOR
+//   [14:12]  EQ_COLOR                bit 15 EQ_COLOR_MASK
+//   bit 16   BLEND_SEPARATE_ALPHA    bit 17 BLEND_SEPARATE_ALPHA_MASK
+//   bit 18   SRC_FUNC_ALPHA_MASK     bit 19 DST_FUNC_ALPHA_MASK
+//   [23:20]  SRC_FUNC_ALPHA          [27:24] DST_FUNC_ALPHA
+//   [30:28]  EQ_ALPHA                bit 31 EQ_ALPHA_MASK
+constexpr uint32_t PE_ALPHA_CONFIG_BLEND_ENABLE_COLOR = 0x1;
+constexpr uint32_t PE_ALPHA_CONFIG_BLEND_SEPARATE_ALPHA = 0x10000;
+constexpr uint32_t PE_ALPHA_CONFIG_SRC_FUNC_COLOR_SHIFT = 4;
+constexpr uint32_t PE_ALPHA_CONFIG_DST_FUNC_COLOR_SHIFT = 8;
+constexpr uint32_t PE_ALPHA_CONFIG_EQ_COLOR_SHIFT = 12;
+constexpr uint32_t PE_ALPHA_CONFIG_SRC_FUNC_ALPHA_SHIFT = 20;
+constexpr uint32_t PE_ALPHA_CONFIG_DST_FUNC_ALPHA_SHIFT = 24;
+constexpr uint32_t PE_ALPHA_CONFIG_EQ_ALPHA_SHIFT = 28;
+
+// BLEND_FUNC (4 bits) -- the glBlendFunc factors.
+// NOTE: values 11..14 (the CONSTANT_* factors) are deliberately omitted. The
+// old vendor gceBLEND_FUNCTION enum orders them COLOR-then-ALPHA while rnndb
+// and Mesa order them ALPHA-then-COLOR; Mesa's is the hardware-tested one, but
+// we have not verified it here. HALTI5 also carries a second, fp16 blend-color
+// register pair (PE_ALPHA_COLOR_EXT0/1 at 0x14980/0x149A0) that Mesa programs
+// alongside the unorm8 PE_ALPHA_BLEND_COLOR, and that is likewise unverified.
+// Add them (with a hardware test) if a constant-color blend is ever needed.
+constexpr uint32_t BLEND_FUNC_ZERO = 0;
+constexpr uint32_t BLEND_FUNC_ONE = 1;
+constexpr uint32_t BLEND_FUNC_SRC_COLOR = 2;
+constexpr uint32_t BLEND_FUNC_ONE_MINUS_SRC_COLOR = 3;
+constexpr uint32_t BLEND_FUNC_SRC_ALPHA = 4;
+constexpr uint32_t BLEND_FUNC_ONE_MINUS_SRC_ALPHA = 5;
+constexpr uint32_t BLEND_FUNC_DST_ALPHA = 6;
+constexpr uint32_t BLEND_FUNC_ONE_MINUS_DST_ALPHA = 7;
+constexpr uint32_t BLEND_FUNC_DST_COLOR = 8;
+constexpr uint32_t BLEND_FUNC_ONE_MINUS_DST_COLOR = 9;
+constexpr uint32_t BLEND_FUNC_SRC_ALPHA_SATURATE = 10;
+
+// BLEND_EQ (3 bits) -- the glBlendEquation modes.
+constexpr uint32_t BLEND_EQ_ADD = 0;
+constexpr uint32_t BLEND_EQ_SUBTRACT = 1;
+constexpr uint32_t BLEND_EQ_REVERSE_SUBTRACT = 2;
+constexpr uint32_t BLEND_EQ_MIN = 3;
+constexpr uint32_t BLEND_EQ_MAX = 4;
+
 // ---- SH (shader instruction cache count + unified uniforms, high block) -----
 constexpr uint32_t SH_CONFIG = 0x15600;      // RTNE_ROUNDING = 0x2
 constexpr uint32_t VS_ICACHE_COUNT = 0x15604; // inst_words/4 - 1

@@ -669,6 +669,199 @@ bool spinning_cube_test(etna::Gpu &gpu)
 	return true;
 }
 
+// =============================================================================
+//  Alpha blending
+// =============================================================================
+//
+// Two overlapping axis-aligned quads, drawn in two submits:
+//   A -- opaque red, blending OFF   (left 2/3, full height)
+//   B -- green at alpha 0.5, SRC_ALPHA / ONE_MINUS_SRC_ALPHA (right 2/3, middle band)
+//
+// which partitions the target into four regions we can probe:
+//
+//   +--------------------------------------------+
+//   |  A only (red)          |  clear (blue)     |
+//   |            +-----------+-------------+     |
+//   |            | A n B     | B only      |     |  <- B's band
+//   |            | green/red | green/blue  |     |
+//   |            +-----------+-------------+     |
+//   |  A only (red)          |  clear (blue)     |
+//   +--------------------------------------------+
+//
+// Blending against *two different destinations* is the point: it proves the PE
+// actually re-read the render target rather than overwriting it. If the
+// OVERWRITE bit were left set (the pre-blend behaviour), both blended regions
+// would come out the same flat colour instead of picking up red vs. blue.
+//
+// Rects rather than the usual triangles so every probe sits far from a rasterised
+// edge, where a point-sampled CPU reference can't be expected to agree.
+bool triangle_blend_test(Gpu &gpu)
+{
+	constexpr uint32_t W = 64, H = 64;
+	constexpr uint32_t pw = (W + 15) & ~15u;
+	constexpr uint32_t ph = (H + 3) & ~3u;
+	constexpr uint32_t stride = pw * 4;
+	constexpr uint32_t rt_size = stride * ph;
+	constexpr uint32_t CLEAR = 0xFF0000FF; // opaque blue (A,R,G,B = FF,00,00,FF)
+	constexpr uint32_t RED = 0xFFFF0000;   // what quad A lays down
+	constexpr float SrcAlpha = 0.5f;
+
+	// Interleaved pos-vec3 + colour-vec4, stride 28 -- emit_mesh's fixed format.
+	// Two triangles per quad, wound the same way as the other tests.
+	auto quad = [](float x0, float y0, float x1, float y1, float r, float g, float b, float a) {
+		return std::array<float, 6 * 7>{
+			// clang-format off
+			x0, y0, 0.5f, r, g, b, a,   x1, y0, 0.5f, r, g, b, a,   x1, y1, 0.5f, r, g, b, a,
+			x0, y0, 0.5f, r, g, b, a,   x1, y1, 0.5f, r, g, b, a,   x0, y1, 0.5f, r, g, b, a,
+			// clang-format on
+		};
+	};
+	// Overlap is ndc x in [-0.3, 0.3] -- ~19 px wide at W=64, so a 5x5 probe
+	// block in the middle clears both rasterised edges by ~7 px.
+	const auto quad_a = quad(-0.9f, -0.9f, 0.3f, 0.9f, 1.0f, 0.0f, 0.0f, 1.0f);		// opaque red
+	const auto quad_b = quad(-0.3f, -0.5f, 0.9f, 0.5f, 0.0f, 1.0f, 0.0f, SrcAlpha); // half-alpha green
+
+	Bo rt = gpu.alloc(rt_size);
+	Bo va = gpu.alloc(sizeof(quad_a));
+	Bo vb = gpu.alloc(sizeof(quad_b));
+	Bo vsb = gpu.alloc(sizeof(kVsColorCode));
+	Bo psb = gpu.alloc(sizeof(kPsColorCode));
+	Bo lin = gpu.alloc(W * H * 4);
+	if (!rt || !va || !vb || !vsb || !psb || !lin)
+		return false;
+
+	std::ranges::fill(rt.span<uint32_t>(), CLEAR);
+	rt.cpu_fini(RelocWrite);
+	std::ranges::copy(quad_a, va.span<float>().begin());
+	va.cpu_fini(RelocWrite);
+	std::ranges::copy(quad_b, vb.span<float>().begin());
+	vb.cpu_fini(RelocWrite);
+	std::ranges::copy(kVsColorCode, vsb.span<uint32_t>().begin());
+	vsb.cpu_fini(RelocWrite);
+	std::ranges::copy(kPsColorCode, psb.span<uint32_t>().begin());
+	psb.cpu_fini(RelocWrite);
+
+	// Shared between the two draws: same shaders, same target, no depth. Only
+	// the vertex buffer and the blend state differ.
+	etna::MeshDraw d{
+		.rt = &rt,
+		.rt_stride = stride,
+		.vtx = &va,
+		.vtx_stride = 28,
+		.vs = &vsb,
+		.vs_words = kVsColorCode.size(),
+		.vs_temps = 4,
+		.ps = &psb,
+		.ps_words = kPsColorCode.size(),
+		.ps_temps = 2,
+		.ps_out_reg = 1,
+		.width = W,
+		.height = H,
+		.vertex_count = 6,
+	};
+
+	auto cs_a = gpu.new_cmd_stream(1024);
+	etna::emit_mesh(cs_a, d); // quad A: blend defaults to off
+	auto start = read_cntpct();
+	if (!gpu.submit_and_wait(cs_a)) {
+		gpu.dump_status("blend: opaque draw");
+		return false;
+	}
+
+	d.vtx = &vb;
+	d.blend = etna::kBlendSrcAlpha;
+	auto cs_b = gpu.new_cmd_stream(1024);
+	etna::emit_mesh(cs_b, d);
+	if (!gpu.submit_and_wait(cs_b)) {
+		gpu.dump_status("blend: blended draw");
+		return false;
+	}
+	print("blend: two quads drawn in ", uint32_t(read_cntpct() - start), " ticks");
+	print(" (PE_ALPHA_CONFIG 0x", Hex{etna::kBlendSrcAlpha.pe_alpha_config()}, ")\n");
+
+	// Untile so probes can address pixel (x,y) at y*W + x.
+	std::ranges::fill(lin.span<uint32_t>(), 0xDEADBEEFu);
+	lin.cpu_fini(RelocWrite);
+	auto cs_r = gpu.new_cmd_stream(256);
+	resolve(cs_r, lin, rt, W, H, stride, W * 4);
+	if (!gpu.submit_and_wait(cs_r)) {
+		gpu.dump_status("blend: resolve");
+		return false;
+	}
+	lin.cpu_prep(RelocRead);
+
+	// CPU reference: out = src*srcA + dst*(1-srcA), per channel, unorm8.
+	// Alpha blends by the same factors (no BLEND_SEPARATE_ALPHA), so over an
+	// opaque destination out.A = 0.5*0.5 + 0.5*1.0 = 0.75 -> 191.
+	auto blend_ref = [](float sr, float sg, float sb, float sa, uint32_t dst) {
+		auto ch = [](float s, uint32_t d, float a) {
+			float o = s * 255.0f * a + float(d) * (1.0f - a);
+			return uint32_t(o + 0.5f) & 0xFFu;
+		};
+		uint32_t da = (dst >> 24) & 0xFF, dr = (dst >> 16) & 0xFF;
+		uint32_t dg = (dst >> 8) & 0xFF, db = dst & 0xFF;
+		return (ch(sa, da, sa) << 24) | (ch(sr, dr, sa) << 16) | (ch(sg, dg, sa) << 8) | ch(sb, db, sa);
+	};
+
+	// ndc -> window pixel. +Y is increasing framebuffer rows (see triangle_test).
+	auto px = [](float ndc_x, float ndc_y) {
+		return std::pair<uint32_t, uint32_t>{uint32_t((ndc_x * 0.5f + 0.5f) * W),
+											 uint32_t((ndc_y * 0.5f + 0.5f) * H)};
+	};
+
+	struct Probe {
+		const char *name;
+		float ndc_x, ndc_y;
+		uint32_t expect;
+	};
+	const std::array<Probe, 4> probes = {{
+		{"A only (opaque red)", -0.6f, 0.0f, RED},
+		{"A n B (green over red)", 0.0f, 0.0f, blend_ref(0, 1, 0, SrcAlpha, RED)},
+		{"B only (green over blue)", 0.6f, 0.0f, blend_ref(0, 1, 0, SrcAlpha, CLEAR)},
+		{"untouched (clear blue)", 0.6f, 0.8f, CLEAR},
+	}};
+
+	// Hardware unorm blend rounding can differ from the CPU reference by a
+	// bit; allow +-2 per channel. Every pixel of a 5x5 block must agree, which
+	// also catches a region landing in the wrong place.
+	constexpr int Tol = 2;
+	constexpr int Half = 2;
+	auto img = lin.span<const uint32_t>();
+	bool ok = true;
+	for (const auto &p : probes) {
+		auto [cx, cy] = px(p.ndc_x, p.ndc_y);
+		uint32_t worst = 0;
+		int worst_delta = 0;
+		for (int dy = -Half; dy <= Half; dy++) {
+			for (int dx = -Half; dx <= Half; dx++) {
+				uint32_t got = img[(cy + dy) * W + (cx + dx)];
+				for (int sh = 0; sh < 32; sh += 8) {
+					int delta = int((got >> sh) & 0xFF) - int((p.expect >> sh) & 0xFF);
+					delta = delta < 0 ? -delta : delta;
+					if (delta > worst_delta) {
+						worst_delta = delta;
+						worst = got;
+					}
+				}
+			}
+		}
+		print("  ", p.name, " at (", cx, ",", cy, "): expect 0x", Hex{p.expect});
+		if (worst_delta > Tol) {
+			print(" got 0x", Hex{worst}, " -- FAILED (off by ", uint32_t(worst_delta), ")\n");
+			ok = false;
+		} else {
+			print(" ok (max delta ", uint32_t(worst_delta), ")\n");
+		}
+	}
+	if (!ok) {
+		print("FAILED: blended pixels do not match the CPU reference\n");
+		return false;
+	}
+
+	print("GPU alpha-blended over two different destinations -- PE blending works. \\o/\n");
+	return true;
+}
+
 // This test was made to help diagnose a rendering issue that ended up
 // being a result of the shader ALU not being reset (running a dp2x8 shader on boot
 // fixes it).

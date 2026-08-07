@@ -737,15 +737,23 @@ void emit_mesh(CmdStream &cs, const MeshDraw &d)
 		cs.set_state_reloc(PE_PIPE_DEPTH_ADDR0, {d.depth, static_cast<uint32_t>(RelocRead | RelocWrite), 0});
 	cs.set_state(PE_STENCIL_OP, 0);
 	cs.set_state(PE_STENCIL_CONFIG, 0);
-	cs.set_state(PE_ALPHA_OP, 0);
+	cs.set_state(PE_ALPHA_OP, 0); // alpha *test* off (distinct from blending)
+	// Constant-color blend factors are not supported, so the blend color is
+	// always 0 -- see the BLEND_FUNC note in gpu_regs_3d.hh.
 	cs.set_state(PE_ALPHA_BLEND_COLOR, 0);
-	cs.set_state(PE_ALPHA_CONFIG, 0);
-	cs.set_state(PE_COLOR_FORMAT, PE_FORMAT_A8R8G8B8 | PE_COLOR_FORMAT_COMPONENTS_ALL | PE_COLOR_FORMAT_OVERWRITE);
+	// Blending, and the OVERWRITE bit it forces off: with blending live the PE
+	// must read the render target back, so it may not take the overwrite fast
+	// path. Both words come from the same BlendState (etna_blend.hh).
+	cs.set_state(PE_ALPHA_CONFIG, d.blend.pe_alpha_config());
+	cs.set_state(PE_COLOR_FORMAT, d.blend.pe_color_format());
 	cs.set_state(PE_COLOR_STRIDE, d.rt_stride);
 	cs.set_state(PE_HDEPTH_CONTROL, 0);
 	cs.set_state_reloc(PE_PIPE_COLOR_ADDR0, {d.rt, static_cast<uint32_t>(RelocRead | RelocWrite), 0});
 	cs.set_state(PE_STENCIL_CONFIG_EXT, 0);
 	cs.set_state(PE_LOGIC_OP, PE_LOGIC_OP_COPY_SINGLEBUF);
+	// Dither stays off (all-ones). Mesa disables dithering whenever blending is
+	// enabled on cores without the PE_DITHER_FIX feature, because the two
+	// together visibly shift colors; we never dither, so nothing to switch.
 	cs.set_state(PE_DITHER0, 0xFFFFFFFF);
 	cs.set_state(PE_DITHER1, 0xFFFFFFFF);
 	cs.set_state(PE_STENCIL_CONFIG_EXT2, 0);
