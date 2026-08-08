@@ -116,6 +116,40 @@ Also verified on hardware, all vsync-locked at 58 fps unless noted:
   (1.8 s and 1.0 s per frame, CPU Perlin noise over 921,600 pixels — see
   TODO.md).
 
+## 3D (P3D)
+
+`size(w, h, P3D)` switches on the depth buffer and Processing's default
+perspective camera — an eye far enough back on +z that one world unit is one
+pixel at z = 0, so a 3D sketch can still lay things out in pixel coordinates.
+`box()`, `sphere()`, `rotateX/Y/Z()`, `camera()`, `perspective()`, `lights()`
+and the individual light types all work; verified on hardware:
+
+```
+Rotate_1, Rotate_Push_Pop, Primitives_3D, Move_Eye, Perspective,
+Perspective_vs_Ortho, On_Off, Mixture, Reflection, Spot, Directional
+```
+
+all at 58 fps except Mixture_Grid (28 fps — a 4×4 grid of lit spheres).
+
+Three things this needed, in descending order of subtlety:
+
+- **Clip-space `w` now reaches the GPU.** The vertex was position-xyz plus
+  colour, so `w` was dropped and the fetch supplied 1.0 — fine for every
+  ortho projection, useless for a perspective one. Position is now 4 floats
+  (`MeshDraw::pos_components`), so the hardware does the divide and keeps
+  varyings perspective-correct. It costs the vertex-bound 2D sketches about
+  20%; see TODO.md.
+- **The perspective frustum is built with top and bottom swapped.**
+  Processing's y grows downward; the 2D path gets that from
+  `glOrtho(0, w, h, 0, …)` and this is the same flip. Without it a P3D sketch
+  renders upside down.
+- **`size()` applies the 3D state immediately**, not from the next frame:
+  it is called inside `setup()`, which already runs inside a frame, and a
+  static-mode sketch does *all* its drawing there.
+
+Gaps: `spotLight()` degrades to a point light, `emissive()` is ignored, and
+`vertex(x, y, z)` inside `beginShape()` drops z.
+
 ## How a .pde compiles
 
 `tools/pde_prototypes.py` does the three jobs Processing's own preprocessor

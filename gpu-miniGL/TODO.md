@@ -68,6 +68,13 @@ size into a smaller buffer and upscale.
 - `PShape` / `loadShape`, `createGraphics` (FBOs, cheap — see gpu/ M4),
   `PImage`-based `filter()`. `bezier()`/`bezierVertex()` are done;
   `curve()`/`curveVertex()` (Catmull-Rom) are not.
-- 3D: `box()`, `sphere()`, `camera()`, `lights()`. The pipe has depth and a
-  real 3D path (gpu/'s spinning cube), so this is psketch-side work plus a
-  lighting shader.
+- 3D is implemented (P3D, depth, perspective camera, lights, box/sphere), but
+  with gaps: `spotLight()` degrades to a point light (mini-GL's lighting has
+  no cone term), `emissive()` is ignored (no emission term in the material
+  model), and `vertex(x, y, z)` inside `beginShape()` drops z -- the shape
+  buffer is 2D. `PShape`/OBJ loading needs file I/O as well.
+- Carrying clip-space `w` made the vertex 8 floats instead of 7, which costs
+  the vertex-bound sketches about 20% (Game_Of_Life 119 -> 143 ms). Sketches
+  that are not vertex-bound are unaffected (still 58 fps). Recovering it
+  would mean two vertex layouts selected by whether the projection is
+  affine -- only worth it if the CPU vertex path above gets optimised first.

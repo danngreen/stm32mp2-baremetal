@@ -68,6 +68,12 @@ inline constexpr int TRIANGLE_FAN = 11;
 inline constexpr int QUADS = 17;
 inline constexpr int QUAD_STRIP = 18;
 inline constexpr int POLYGON = 20;
+// Renderers, as passed to size(). P3D turns on the depth buffer and
+// Processing's default perspective camera; OPENGL is its old name for P3D.
+inline constexpr int P2D = 2;
+inline constexpr int P3D = 3;
+inline constexpr int OPENGL = 3;
+
 inline constexpr int OPEN = 1;	  // endShape, and arc() mode
 inline constexpr int CLOSE = 2;
 inline constexpr int CHORD = 3; // arc() modes
@@ -292,6 +298,7 @@ void rect(float x, float y, float w, float h);	 // interpreted per rectMode
 // declare (Morph has `ArrayList<PVector> circle`) -- Java keeps method and
 // field namespaces apart, C++ does not.
 void line(float x1, float y1, float x2, float y2);
+void line(float x1, float y1, float z1, float x2, float y2, float z2);
 // A standalone cubic Bezier: (x1,y1) and (x4,y4) are the endpoints, the
 // middle pair the controls. Stroked, like Processing's.
 void bezier(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4);
@@ -309,6 +316,7 @@ void point(float x, float y);
 void beginShape();		   // POLYGON
 void beginShape(int kind); // POINTS/LINES/TRIANGLES/TRIANGLE_STRIP/... above
 void vertex(float x, float y);
+void vertex(float x, float y, float z);
 // Cubic Bezier from the previous vertex, through two control points, to
 // (x, y) -- tessellated on the CPU into ordinary vertices.
 void bezierVertex(float cx1, float cy1, float cx2, float cy2, float x, float y);
@@ -320,9 +328,58 @@ void endShape(int mode);   // CLOSE joins the last vertex back to the first
 void pushMatrix();
 void popMatrix();
 void translate(float x, float y);
-void rotate(float radians);
+void translate(float x, float y, float z);
+void rotate(float radians); // about z, the 2D rotation
+void rotate(float angle, float x, float y, float z);
+void rotateX(float angle);
+void rotateY(float angle);
+void rotateZ(float angle);
 void scale(float s);
 void scale(float sx, float sy);
+void scale(float sx, float sy, float sz);
+
+// --- 3D camera and projection -------------------------------------------------
+// The no-argument forms are Processing's defaults: the eye sits back far
+// enough on +z that one world unit is one pixel at z = 0, so 2D-style
+// coordinates keep working in P3D.
+void camera();
+void camera(float eyeX, float eyeY, float eyeZ, float centerX, float centerY, float centerZ, float upX, float upY,
+			float upZ);
+void perspective();
+void perspective(float fovy, float aspect, float zNear, float zFar);
+void ortho();
+void ortho(float left, float right, float bottom, float top);
+void ortho(float left, float right, float bottom, float top, float near, float far);
+
+// --- lighting -----------------------------------------------------------------
+// Lights are per-frame in Processing: they reset every draw(), so a sketch
+// calls lights() (or the individual ones) each frame.
+void lights();	 // ambient + a directional light from the viewer
+void noLights();
+void ambientLight(float r, float g, float b);
+void directionalLight(float r, float g, float b, float nx, float ny, float nz);
+void pointLight(float r, float g, float b, float x, float y, float z);
+void spotLight(float r, float g, float b, float x, float y, float z, float nx, float ny, float nz, float angle,
+			   float concentration);
+void lightFalloff(float constant, float linear, float quadratic);
+void lightSpecular(float r, float g, float b);
+void normal(float nx, float ny, float nz);
+
+// Material response, applied to subsequent geometry.
+void specular(float r, float g, float b);
+void specular(float gray);
+void shininess(float s);
+void emissive(float r, float g, float b);
+void emissive(float gray);
+void ambient(float r, float g, float b);
+void ambient(float gray);
+
+// --- 3D primitives ------------------------------------------------------------
+void box(float size);
+void box(float w, float h, float d);
+void sphere(float r);
+void sphereDetail(int n);
+void sphereDetail(int ures, int vres);
 
 // --- direct pixel access ------------------------------------------------------
 // `pixels` is the frame as 0xAARRGGBB, one int per pixel, row-major.
@@ -367,12 +424,13 @@ inline float textWidth(const char *)
 // --- environment --------------------------------------------------------------
 void frameRate(float fps); // the harness throttles the frame loop to this
 
-// Accepted-and-ignored stubs, so more sketches compile untouched. size() is a
-// no-op because the panel decides the real size -- sketches should use
-// width/height, which most already do.
+// The panel decides the real size, so the dimensions are ignored -- sketches
+// should use width/height, which most already do. The RENDERER argument is
+// not ignored: P3D switches on the depth buffer and the 3D camera.
 inline void size(int, int)
 {
 }
+void size(int, int, int renderer);
 inline void smooth()
 {
 }
@@ -418,6 +476,8 @@ struct PApplet {
 void psk_frame_begin();
 // Minimum microseconds between draw() calls (0 = every vblank); from frameRate().
 unsigned psk_frame_period_us();
+// True when the sketch asked for P3D: the harness needs a depth buffer.
+bool psk_wants_3d();
 // Non-null only when the sketch called updatePixels() this frame: the harness
 // copies it into the scanout buffer after the resolve. Clears the flag.
 const int *psk_take_pixels();

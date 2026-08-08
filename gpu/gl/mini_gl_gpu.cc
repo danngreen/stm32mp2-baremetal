@@ -233,6 +233,7 @@ void GpuBackend::draw(const BatchState &s, std::span<const float> verts, uint32_
 	d.rt_stride = pw_ * 4;
 	d.vtx = &vb;
 	d.vtx_stride = kFloatsPerVertex * 4;
+	d.pos_components = 4; // clip-space xyzw; the GPU does the perspective divide
 	d.vs = &vs_;
 	d.vs_words = kVsPassthrough.size();
 	d.vs_temps = 4;

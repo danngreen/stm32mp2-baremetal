@@ -379,6 +379,16 @@ exactly the register sequence, in the same order, that the pipe emitted before
 dirty tracking existed. The five hardware-verified 3D tests all go through
 `emit_mesh`, so they are the regression suite for the full-emit path.
 
+**Vertex layout is per-draw.** `MeshDraw::pos_components` picks a 3- or
+4-float position. With 3 the vertex fetch supplies `w = 1`, which is all an
+ortho projection ever needs and is what every test here uses. A perspective
+projection needs the real `w` to reach the hardware so the pipe does the
+divide -- and so varyings interpolate perspective-correctly, which a CPU-side
+divide cannot give you. The attribute *format* has its own dirty bit
+(`DirtyVertexFormat`) rather than riding on `DirtyVertex`: a batched frame
+rebinds a new arena slice every draw but keeps one layout, so folding the two
+together silently cost 12 dwords per draw.
+
 **The vertex arena is not optional.** With one draw per submission you can
 upload vertices into one buffer, submit, and wait — the GPU is done before the
 CPU touches it again. As soon as several draws share a submission that stops

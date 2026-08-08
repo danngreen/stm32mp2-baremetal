@@ -61,7 +61,11 @@ enum DirtyBits : uint32_t {
 	DirtyUniforms = 1u << 6,
 	DirtyVertex = 1u << 7,	 // vertex buffer address and stride
 	DirtyStatic = 1u << 8,	 // the one-time pipe init + invariant blocks
-	DirtyAll = 0x1FFu,
+	// The attribute LAYOUT (component counts and offsets), which changes far
+	// more rarely than the buffer address -- a batched frame rebinds a new
+	// arena slice per draw but keeps one layout throughout.
+	DirtyVertexFormat = 1u << 9,
+	DirtyAll = 0x3FFu,
 };
 
 // Worst-case dwords one full draw can emit; draw() refuses rather than
@@ -119,7 +123,7 @@ private:
 		uint32_t sc_minx = 0, sc_miny = 0, sc_maxx = 0, sc_maxy = 0;
 		uint32_t vs = 0, vs_words = 0, vs_temps = 0;
 		uint32_t ps = 0, ps_words = 0, ps_temps = 0, ps_out_reg = 0;
-		uint32_t vtx = 0, vtx_stride = 0;
+		uint32_t vtx = 0, vtx_stride = 0, pos_components = 0;
 	};
 
 	static Tracked snapshot(const MeshDraw &d);

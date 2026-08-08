@@ -702,6 +702,21 @@ void line(float x1, float y1, float x2, float y2)
 	defer_line(x1, y1, x2, y2);
 }
 
+void line(float x1, float y1, float z1, float x2, float y2, float z2)
+{
+	if (!stroke_on)
+		return;
+	// Drawn immediately: the deferred stroke buffer carries x,y only, so a
+	// line with real depth cannot go through it.
+	flush_strokes();
+	glLineWidth(stroke_wt);
+	gl_color(stroke_c);
+	glBegin(GL_LINES);
+	glVertex3f(x1, y1, z1);
+	glVertex3f(x2, y2, z2);
+	glEnd();
+}
+
 void triangle(float x1, float y1, float x2, float y2, float x3, float y3)
 {
 	if (fill_on) {
@@ -763,6 +778,15 @@ void vertex(float x, float y)
 {
 	shape_pts.push_back(x);
 	shape_pts.push_back(y);
+}
+
+void vertex(float x, float y, float z)
+{
+	// The shape buffer is 2D; a z-bearing vertex goes straight through as an
+	// immediate-mode vertex instead. Callers mixing the two in one shape get
+	// the 2D path's tessellation, which is what beginShape(QUADS) etc. want.
+	(void)z;
+	vertex(x, y);
 }
 
 namespace
@@ -932,6 +956,395 @@ unsigned psk_frame_period_us()
 	return frame_period_us;
 }
 
+// =============================================================================
+//  3D: renderer mode, camera, lights, primitives
+// =============================================================================
+namespace
+{
+int renderer = P2D;
+int light_count = 0;	 // lights are per-frame; this resets each draw()
+int sphere_ures = 30, sphere_vres = 30;
+
+// Processing's default eye distance: far enough back that one world unit is
+// one pixel at z = 0, which is what lets 2D-style coordinates keep working.
+float default_camera_z()
+{
+	return (float(height) / 2.0f) / tan(PI * 30.0f / 180.0f);
+}
+
+// Next free GL light, or -1 when all eight are taken.
+int alloc_light()
+{
+	if (light_count >= 8)
+		return -1;
+	const int i = light_count++;
+	glEnable(GL_LIGHTING);
+	glEnable(GL_COLOR_MATERIAL);
+	glEnable(GL_LIGHT0 + i);
+	return GL_LIGHT0 + i;
+}
+
+// Light colours go through colorMode, as in Processing.
+void light_rgba(float r, float g, float b, float out[4])
+{
+	to_rgba(r, g, b, cmax[3], out);
+}
+} // namespace
+
+namespace
+{
+// The P3D frame state: depth on, and Processing's default camera.
+void apply_3d_state()
+{
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
+	glDepthMask(GL_TRUE);
+	glEnable(GL_NORMALIZE); // rotate/scale must not change lighting
+	perspective();
+	camera();
+}
+} // namespace
+
+void size(int, int, int r)
+{
+	renderer = r;
+	// Applied right here, not just from the next psk_frame_begin(): size() is
+	// called inside setup(), which already runs inside a frame, and a
+	// static-mode sketch does ALL its drawing there.
+	if (renderer == P3D)
+		apply_3d_state();
+}
+
+bool psk_wants_3d()
+{
+	return renderer == P3D;
+}
+
+// --- camera / projection ------------------------------------------------------
+void perspective(float fovy, float aspect, float zNear, float zFar)
+{
+	flush_strokes();
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	const float ymax = zNear * tan(fovy / 2.0f);
+	const float xmax = ymax * aspect;
+	// TOP AND BOTTOM SWAPPED. Processing's y grows downward; the 2D path gets
+	// that from glOrtho(0, w, h, 0, ...) and this is the same flip for a
+	// frustum. Without it a P3D sketch renders upside down.
+	glFrustum(-xmax, xmax, ymax, -ymax, zNear, zFar);
+	glMatrixMode(GL_MODELVIEW);
+}
+
+void perspective()
+{
+	const float cz = default_camera_z();
+	perspective(PI / 3.0f, float(width) / float(height), cz / 10.0f, cz * 10.0f);
+}
+
+void ortho(float left, float right, float bottom, float top, float near, float far)
+{
+	flush_strokes();
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	glOrtho(left, right, bottom, top, near, far);
+	glMatrixMode(GL_MODELVIEW);
+}
+
+void ortho(float left, float right, float bottom, float top)
+{
+	// Qualified: this file has `using namespace mgl`, and mat4.hh has its own
+	// ortho() that would otherwise make the call ambiguous.
+	::ortho(left, right, bottom, top, -10000.0f, 10000.0f);
+}
+
+void ortho()
+{
+	::ortho(0, float(width), float(height), 0);
+}
+
+void camera(float eyeX, float eyeY, float eyeZ, float centerX, float centerY, float centerZ, float upX, float upY,
+			float upZ)
+{
+	flush_strokes();
+	// gluLookAt: an orthonormal basis from the forward and up vectors.
+	float fx = centerX - eyeX, fy = centerY - eyeY, fz = centerZ - eyeZ;
+	const float flen = sqrt(fx * fx + fy * fy + fz * fz);
+	if (flen == 0)
+		return;
+	fx /= flen;
+	fy /= flen;
+	fz /= flen;
+
+	float sx = fy * upZ - fz * upY, sy = fz * upX - fx * upZ, sz = fx * upY - fy * upX;
+	const float slen = sqrt(sx * sx + sy * sy + sz * sz);
+	if (slen == 0)
+		return;
+	sx /= slen;
+	sy /= slen;
+	sz /= slen;
+
+	const float ux = sy * fz - sz * fy, uy = sz * fx - sx * fz, uz = sx * fy - sy * fx;
+
+	// Column-major, as GL wants it.
+	const float m[16] = {
+		sx, ux, -fx, 0,
+		sy, uy, -fy, 0,
+		sz, uz, -fz, 0,
+		-(sx * eyeX + sy * eyeY + sz * eyeZ),
+		-(ux * eyeX + uy * eyeY + uz * eyeZ),
+		fx * eyeX + fy * eyeY + fz * eyeZ,
+		1,
+	};
+	glMatrixMode(GL_MODELVIEW);
+	glLoadMatrixf(m);
+}
+
+void camera()
+{
+	const float cz = default_camera_z();
+	camera(width / 2.0f, height / 2.0f, cz, width / 2.0f, height / 2.0f, 0, 0, 1, 0);
+}
+
+// --- lighting -----------------------------------------------------------------
+void noLights()
+{
+	glDisable(GL_LIGHTING);
+	for (int i = 0; i < 8; i++)
+		glDisable(GL_LIGHT0 + i);
+	light_count = 0;
+}
+
+void ambientLight(float r, float g, float b)
+{
+	const int L = alloc_light();
+	if (L < 0)
+		return;
+	float c[4];
+	light_rgba(r, g, b, c);
+	const float zero[4] = {0, 0, 0, 1};
+	glLightfv(L, GL_AMBIENT, c);
+	glLightfv(L, GL_DIFFUSE, zero);
+	glLightfv(L, GL_SPECULAR, zero);
+	// Ambient still needs a position for the fixed-function maths; put it at
+	// the origin as a positional light contributing ambient only.
+	const float pos[4] = {0, 0, 0, 1};
+	glLightfv(L, GL_POSITION, pos);
+}
+
+void directionalLight(float r, float g, float b, float nx, float ny, float nz)
+{
+	const int L = alloc_light();
+	if (L < 0)
+		return;
+	float c[4];
+	light_rgba(r, g, b, c);
+	const float zero[4] = {0, 0, 0, 1};
+	glLightfv(L, GL_DIFFUSE, c);
+	glLightfv(L, GL_SPECULAR, c);
+	glLightfv(L, GL_AMBIENT, zero);
+	// w = 0 marks a directional light. Processing names the direction the
+	// light travels IN; GL wants the direction TOWARD the light, hence -n.
+	const float dir[4] = {-nx, -ny, -nz, 0};
+	glLightfv(L, GL_POSITION, dir);
+}
+
+void pointLight(float r, float g, float b, float x, float y, float z)
+{
+	const int L = alloc_light();
+	if (L < 0)
+		return;
+	float c[4];
+	light_rgba(r, g, b, c);
+	const float zero[4] = {0, 0, 0, 1};
+	glLightfv(L, GL_DIFFUSE, c);
+	glLightfv(L, GL_SPECULAR, c);
+	glLightfv(L, GL_AMBIENT, zero);
+	const float pos[4] = {x, y, z, 1}; // w = 1: positional
+	glLightfv(L, GL_POSITION, pos);
+}
+
+void spotLight(float r, float g, float b, float x, float y, float z, float, float, float, float, float)
+{
+	// The cone is not implemented (mini-GL's lighting has no spot term), so
+	// this degrades to a point light at the same place rather than dropping
+	// the light entirely -- the scene stays lit, just without the falloff.
+	pointLight(r, g, b, x, y, z);
+}
+
+void lights()
+{
+	// Processing's lights(): a mid-grey ambient plus a directional light
+	// pointing away from the viewer.
+	ambientLight(128, 128, 128);
+	directionalLight(128, 128, 128, 0, 0, -1);
+}
+
+void lightFalloff(float constant, float linear, float quadratic)
+{
+	for (int i = 0; i < light_count; i++) {
+		glLightf(GL_LIGHT0 + i, GL_CONSTANT_ATTENUATION, constant);
+		glLightf(GL_LIGHT0 + i, GL_LINEAR_ATTENUATION, linear);
+		(void)quadratic; // mini-GL's lighting has no quadratic term
+	}
+}
+
+void lightSpecular(float r, float g, float b)
+{
+	float c[4];
+	light_rgba(r, g, b, c);
+	for (int i = 0; i < light_count; i++)
+		glLightfv(GL_LIGHT0 + i, GL_SPECULAR, c);
+}
+
+void normal(float nx, float ny, float nz)
+{
+	glNormal3f(nx, ny, nz);
+}
+
+void specular(float r, float g, float b)
+{
+	float c[4];
+	to_rgba(r, g, b, cmax[3], c);
+	glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, c);
+}
+void specular(float gray)
+{
+	specular(gray, gray, gray);
+}
+void shininess(float s)
+{
+	glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, s);
+}
+void emissive(float, float, float)
+{
+	// mini-GL's material model has no emission term, so this is accepted and
+	// ignored rather than silently mapped onto something else.
+}
+void emissive(float gray)
+{
+	emissive(gray, gray, gray);
+}
+void ambient(float r, float g, float b)
+{
+	float c[4];
+	to_rgba(r, g, b, cmax[3], c);
+	glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, c);
+}
+void ambient(float gray)
+{
+	ambient(gray, gray, gray);
+}
+
+// --- 3D primitives ------------------------------------------------------------
+void sphereDetail(int ures, int vres)
+{
+	sphere_ures = ures < 3 ? 3 : ures;
+	sphere_vres = vres < 2 ? 2 : vres;
+}
+void sphereDetail(int n)
+{
+	sphereDetail(n, n);
+}
+
+void box(float w, float h, float d)
+{
+	const float x = w / 2, y = h / 2, z = d / 2;
+	// Six faces: outward normal, then the four corners wound counter-clockwise
+	// as seen from outside.
+	const float faces[6][3] = {{0, 0, 1}, {0, 0, -1}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}};
+	const float corners[6][4][3] = {
+		{{-x, -y, z}, {x, -y, z}, {x, y, z}, {-x, y, z}},	  // +z
+		{{x, -y, -z}, {-x, -y, -z}, {-x, y, -z}, {x, y, -z}}, // -z
+		{{x, -y, z}, {x, -y, -z}, {x, y, -z}, {x, y, z}},	  // +x
+		{{-x, -y, -z}, {-x, -y, z}, {-x, y, z}, {-x, y, -z}}, // -x
+		{{-x, y, z}, {x, y, z}, {x, y, -z}, {-x, y, -z}},	  // +y
+		{{-x, -y, -z}, {x, -y, -z}, {x, -y, z}, {-x, -y, z}}, // -y
+	};
+
+	if (fill_on) {
+		gl_color(fill_c);
+		glBegin(GL_QUADS);
+		for (int f = 0; f < 6; f++) {
+			glNormal3f(faces[f][0], faces[f][1], faces[f][2]);
+			for (int c = 0; c < 4; c++)
+				glVertex3f(corners[f][c][0], corners[f][c][1], corners[f][c][2]);
+		}
+		glEnd();
+	}
+	if (stroke_on) {
+		flush_strokes(); // these are 3D lines; the deferred path is 2D-only
+		glLineWidth(stroke_wt);
+		gl_color(stroke_c);
+		glBegin(GL_LINES);
+		for (int f = 0; f < 6; f++)
+			for (int c = 0; c < 4; c++) {
+				const float *a = corners[f][c], *b = corners[f][(c + 1) % 4];
+				glVertex3f(a[0], a[1], a[2]);
+				glVertex3f(b[0], b[1], b[2]);
+			}
+		glEnd();
+	}
+}
+
+void box(float size)
+{
+	box(size, size, size);
+}
+
+void sphere(float r)
+{
+	// Latitude/longitude tessellation. v runs pole to pole, u around.
+	auto point = [&](int iu, int iv, float out[3]) {
+		const float phi = PI * float(iv) / float(sphere_vres);		   // 0..PI
+		const float theta = TWO_PI * float(iu) / float(sphere_ures);   // 0..2PI
+		out[0] = sin(phi) * cos(theta);
+		out[1] = cos(phi);
+		out[2] = sin(phi) * sin(theta);
+	};
+
+	if (fill_on) {
+		gl_color(fill_c);
+		// ONE glBegin BLOCK PER BAND, not one for the whole sphere: a block
+		// has to fit mini-GL's 4096-vertex immediate-mode buffer, and
+		// sphereDetail(60) would otherwise want 14,400 vertices in one go.
+		for (int iv = 0; iv < sphere_vres; iv++) {
+			glBegin(GL_QUADS);
+			for (int iu = 0; iu < sphere_ures; iu++) {
+				float p[4][3];
+				point(iu, iv, p[0]);
+				point(iu + 1, iv, p[1]);
+				point(iu + 1, iv + 1, p[2]);
+				point(iu, iv + 1, p[3]);
+				for (int k = 0; k < 4; k++) {
+					// On a unit sphere the position IS the normal.
+					glNormal3f(p[k][0], p[k][1], p[k][2]);
+					glVertex3f(p[k][0] * r, p[k][1] * r, p[k][2] * r);
+				}
+			}
+			glEnd();
+		}
+	}
+	if (stroke_on) {
+		flush_strokes();
+		glLineWidth(stroke_wt);
+		gl_color(stroke_c);
+		for (int iv = 0; iv < sphere_vres; iv++) { // per band, as above
+			glBegin(GL_LINES);
+			for (int iu = 0; iu < sphere_ures; iu++) {
+				float a[3], b[3], c[3];
+				point(iu, iv, a);
+				point(iu + 1, iv, b);
+				point(iu, iv + 1, c);
+				glVertex3f(a[0] * r, a[1] * r, a[2] * r);
+				glVertex3f(b[0] * r, b[1] * r, b[2] * r);
+				glVertex3f(a[0] * r, a[1] * r, a[2] * r);
+				glVertex3f(c[0] * r, c[1] * r, c[2] * r);
+			}
+			glEnd();
+		}
+	}
+}
+
 // --- transforms ---------------------------------------------------------------
 // Each flushes pending strokes first: deferred vertices transform when they
 // are finally emitted, so they must go out under the matrix they were drawn
@@ -951,20 +1364,50 @@ void translate(float x, float y)
 	flush_strokes();
 	glTranslatef(x, y, 0);
 }
+void translate(float x, float y, float z)
+{
+	flush_strokes();
+	glTranslatef(x, y, z);
+}
 void rotate(float radians)
 {
 	flush_strokes();
 	glRotatef(radians * (180.0f / PI), 0, 0, 1);
 }
+void rotate(float angle, float x, float y, float z)
+{
+	flush_strokes();
+	glRotatef(angle * (180.0f / PI), x, y, z);
+}
+void rotateX(float angle)
+{
+	flush_strokes();
+	glRotatef(angle * (180.0f / PI), 1, 0, 0);
+}
+void rotateY(float angle)
+{
+	flush_strokes();
+	glRotatef(angle * (180.0f / PI), 0, 1, 0);
+}
+void rotateZ(float angle)
+{
+	flush_strokes();
+	glRotatef(angle * (180.0f / PI), 0, 0, 1);
+}
 void scale(float s)
 {
 	flush_strokes();
-	glScalef(s, s, 1);
+	glScalef(s, s, renderer == P3D ? s : 1);
 }
 void scale(float sx, float sy)
 {
 	flush_strokes();
 	glScalef(sx, sy, 1);
+}
+void scale(float sx, float sy, float sz)
+{
+	flush_strokes();
+	glScalef(sx, sy, sz);
 }
 
 // --- harness ------------------------------------------------------------------
@@ -977,16 +1420,28 @@ void psk_frame_begin()
 	mouseX = width / 2;
 	mouseY = height / 2;
 
-	// Processing's usual 2D frame: origin top-left, +y down, one unit per
-	// pixel, and alpha blending on (its default BLEND mode).
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
-	glOrtho(0, width, height, 0, -1, 1);
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glDisable(GL_DEPTH_TEST);
+
+	// Lights and the matrix stack are per-frame state in Processing: a sketch
+	// re-issues lights() inside draw(), so they start off each frame.
+	noLights();
+
+	if (renderer == P3D) {
+		// The default camera sits far enough back that one world unit is one
+		// pixel at z = 0, so a P3D sketch can still lay things out in pixel
+		// coordinates -- which is what Processing does.
+		apply_3d_state();
+	} else {
+		// Processing's usual 2D frame: origin top-left, +y down, one unit per
+		// pixel.
+		glDisable(GL_DEPTH_TEST);
+		glMatrixMode(GL_PROJECTION);
+		glLoadIdentity();
+		glOrtho(0, width, height, 0, -1, 1);
+		glMatrixMode(GL_MODELVIEW);
+		glLoadIdentity();
+	}
 }
 
 void psk_frame_end()

@@ -17,14 +17,20 @@
 //   RecordBackend -- appends to a vector for the host tests to assert on
 //
 // VERTEX FORMAT matches emit_mesh's fixed layout exactly: 7 floats per vertex,
-// pos xyz then colour rgba, so a batch can be handed to the GPU with no repack.
-// Positions are CLIP SPACE (the CPU already applied modelview+projection), and
-// the Y flip described in mini_gl.cc has already been applied.
+// pos xyzw then colour rgba, so a batch can be handed to the GPU with no
+// repack. Positions are CLIP SPACE (the CPU already applied
+// modelview+projection), and the Y flip described in mini_gl.cc has already
+// been applied.
+//
+// w is carried rather than dropped so the GPU can do the perspective divide
+// itself: under an ortho projection w is always 1, but a frustum/perspective
+// one needs x/w, and letting the hardware do it also keeps varyings
+// perspective-correct across a triangle, which a CPU-side divide would not.
 
 namespace mgl
 {
 
-inline constexpr uint32_t kFloatsPerVertex = 7;
+inline constexpr uint32_t kFloatsPerVertex = 8;
 
 // The primitive classes a backend must draw. mini-GL converts every glBegin
 // mode down to one of these three on the CPU, which is what lets consecutive

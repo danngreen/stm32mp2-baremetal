@@ -337,10 +337,11 @@ void emit_vertex(float x, float y, float z)
 	v[0] = clip.x;
 	v[1] = clip.y;
 	v[2] = clip.z;
-	v[3] = color[0];
-	v[4] = color[1];
-	v[5] = color[2];
-	v[6] = color[3];
+	v[3] = clip.w; // the GPU divides by this (see mini_gl_backend.hh)
+	v[4] = color[0];
+	v[5] = color[1];
+	v[6] = color[2];
+	v[7] = color[3];
 	g.begin_count++;
 }
 
@@ -349,23 +350,41 @@ const float *vtx(uint32_t i)
 	return g_begin_buf.data() + i * kFloatsPerVertex;
 }
 
+// Make room for one more primitive, splitting the batch if the buffer is
+// full. Every primitive in a block shares one state, so handing the backend
+// what we have and reopening produces identical pixels -- and without this a
+// single glBegin block that expands past the buffer (a detailed sphere is
+// 5400 triangle vertices) would be silently truncated with GL_INVALID_OPERATION.
+void ensure_room(uint32_t n)
+{
+	if (g.batch_count + n > kMaxBatchVerts) {
+		const BatchState s = g.batch_state;
+		flush_batch();
+		want_batch(s);
+	}
+}
+
 // Convert what glBegin accumulated into the batch's primitive class.
 void convert_and_append(GLenum mode, uint32_t n)
 {
 	auto tri = [](uint32_t a, uint32_t b, uint32_t c) {
+		ensure_room(3);
 		push_vertex(vtx(a));
 		push_vertex(vtx(b));
 		push_vertex(vtx(c));
 	};
 	auto line = [](uint32_t a, uint32_t b) {
+		ensure_room(2);
 		push_vertex(vtx(a));
 		push_vertex(vtx(b));
 	};
 
 	switch (mode) {
 		case GL_POINTS:
-			for (uint32_t i = 0; i < n; i++)
+			for (uint32_t i = 0; i < n; i++) {
+				ensure_room(1);
 				push_vertex(vtx(i));
+			}
 			break;
 
 		case GL_LINES:

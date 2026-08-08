@@ -82,12 +82,12 @@ void close_to(float got, float want, const std::string &what, float tol = 1e-4f)
 
 // A vertex out of a recorded draw.
 struct V {
-	float x, y, z, r, g, b, a;
+	float x, y, z, w, r, g, b, a;
 };
 V vert(const RecordBackend::Draw &d, uint32_t i)
 {
 	const float *p = d.verts.data() + i * kFloatsPerVertex;
-	return V{p[0], p[1], p[2], p[3], p[4], p[5], p[6]};
+	return V{p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]};
 }
 
 // -----------------------------------------------------------------------------

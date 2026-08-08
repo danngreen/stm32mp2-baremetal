@@ -60,6 +60,11 @@ struct MeshDraw {
 	uint32_t rt_stride = 0;
 	const Bo *vtx = nullptr;
 	uint32_t vtx_stride = 28;
+	// Floats in the position attribute: 3 (xyz, w defaults to 1.0 in the
+	// vertex fetch) or 4 (xyzw, so a perspective projection's w reaches the
+	// hardware and it does the divide). Colour follows position in the
+	// vertex, so this also moves the colour attribute's offset.
+	uint32_t pos_components = 3;
 	const Bo *vs = nullptr;
 	uint32_t vs_words = 0; // VS length in dwords
 	uint32_t vs_temps = 4;

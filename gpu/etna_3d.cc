@@ -715,6 +715,7 @@ Context::Tracked Context::snapshot(const MeshDraw &d)
 		.ps_out_reg = d.ps_out_reg,
 		.vtx = bo_addr(d.vtx),
 		.vtx_stride = d.vtx_stride,
+		.pos_components = d.pos_components,
 	};
 }
 
@@ -761,6 +762,9 @@ uint32_t Context::compute_dirty(const Tracked &t, const MeshDraw &d) const
 	if (t.vtx != cur_.vtx || t.vtx_stride != cur_.vtx_stride)
 		dirty |= DirtyVertex;
 
+	if (t.pos_components != cur_.pos_components || t.vtx_stride != cur_.vtx_stride)
+		dirty |= DirtyVertexFormat;
+
 	return dirty;
 }
 
@@ -796,16 +800,22 @@ bool Context::draw(const MeshDraw &d)
 		cs.stall(SYNC_RECIPIENT_RA, SYNC_RECIPIENT_PE);
 	}
 
-	// --- vertex input (NFE): pos vec3 @0 + vec4 @12, one interleaved stream --
-	if (dirty & DirtyStatic) {
-		// Attribute FORMAT is fixed by MeshDraw's layout; only the stream
-		// address and stride below actually vary between draws.
-		cs.set_state(NFE_ATTRIB_CONFIG0_0 + 0, NFE_TYPE_FLOAT | (3u << 12));
+	// --- vertex input (NFE): pos vec3/vec4 @0 + colour vec4, one stream ------
+	// DirtyVertexFormat, not DirtyVertex: a Context may see draws with
+	// different position widths (a 2D batch then a perspective one), but a
+	// batched frame rebinding an arena slice per draw must NOT re-emit these
+	// six registers every time.
+	if (dirty & (DirtyStatic | DirtyVertexFormat)) {
+		// Position, then colour at the offset position ends at. With the
+		// default 3-component position these are the byte-identical values
+		// the verified tests have always emitted (12 / 0x000C4008 / 28).
+		const uint32_t pos_bytes = t.pos_components * 4;
+		cs.set_state(NFE_ATTRIB_CONFIG0_0 + 0, NFE_TYPE_FLOAT | (t.pos_components << 12));
 		cs.set_state(NFE_ATTRIB_SCALE0 + 0, fui(1.0f));
-		cs.set_state(NFE_ATTRIB_CONFIG1_0 + 0, 12u);
-		cs.set_state(NFE_ATTRIB_CONFIG0_0 + 4, NFE_TYPE_FLOAT | (4u << 12) | (12u << 16));
+		cs.set_state(NFE_ATTRIB_CONFIG1_0 + 0, pos_bytes); // END = end of position
+		cs.set_state(NFE_ATTRIB_CONFIG0_0 + 4, NFE_TYPE_FLOAT | (4u << 12) | (pos_bytes << 16));
 		cs.set_state(NFE_ATTRIB_SCALE0 + 4, fui(1.0f));
-		cs.set_state(NFE_ATTRIB_CONFIG1_0 + 4, 0x800u | 28u);
+		cs.set_state(NFE_ATTRIB_CONFIG1_0 + 4, 0x800u | t.vtx_stride); // NONCONSEC | END
 	}
 	if (dirty & DirtyVertex) {
 		cs.set_state_reloc(NFE_VERTEX_STREAM_BASE0, {d.vtx, RelocRead, 0});

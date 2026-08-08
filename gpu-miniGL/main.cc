@@ -84,11 +84,14 @@ int main()
 		panic();
 	}
 
-	// The sketch is 2D, so no depth buffer -- GL_DEPTH_TEST would be inert.
+	// A depth buffer costs 1.8 MB of the 64 MB pool and is inert for a 2D
+	// sketch (psk_frame_begin disables the test), so allocate it always
+	// rather than depending on setup() having run -- size(.., P3D) is called
+	// inside setup(), which needs the backend up first.
 	// 8 MB vertex arena: a dense sketch (Game of Life is ~14 MB of vertex data
 	// a frame) then splits into 2 arena flushes instead of 28.
 	static mgl::GpuBackend be;
-	if (!be.init(gpu, HActive, VActive, /*with_depth=*/false, 8 * 1024 * 1024)) {
+	if (!be.init(gpu, HActive, VActive, /*with_depth=*/true, 8 * 1024 * 1024)) {
 		print("FAILED: mini-GL backend init\n");
 		panic();
 	}
@@ -121,6 +124,10 @@ int main()
 	sketch_setup();
 	psk_frame_end();
 	mglEndFrame();
+	// A "static mode" sketch does all its drawing here and leaves draw()
+	// empty, so this is the only evidence it rendered anything at all.
+	print("setup frame: ", be.draws_submitted(), " draw(s), ", be.stream_dwords(), " dwords",
+		  psk_wants_3d() ? " [P3D]" : "", "\n");
 
 	if (!display_init(fbs[0].gpu_addr())) {
 		print("FAILED: display PLL never locked\n");
