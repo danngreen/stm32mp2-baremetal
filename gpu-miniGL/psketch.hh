@@ -29,9 +29,13 @@ using boolean = bool;		// Java's spelling, used verbatim by some sketches
 // --- globals ------------------------------------------------------------------
 extern int width, height;	// set by the harness from the panel size
 extern int frameCount;		// incremented by the harness after each draw()
-extern int mouseX, mouseY;	 // no input device yet: pinned to the screen center
-extern int pmouseX, pmouseY; // previous frame's position -- equal to the above
-extern int mouseDX, mouseDY; // per-frame movement, so zero with a fixed cursor
+// There is no pointer device, so the cursor takes a random walk of its own
+// (see mouse_walk in psketch.cc): the velocity wanders and the position
+// integrates it, bouncing off the edges. Mouse-driven sketches therefore
+// animate rather than sitting at one value.
+extern int mouseX, mouseY;
+extern int pmouseX, pmouseY; // where it was last frame
+extern int mouseDX, mouseDY; // how far it moved this frame
 
 // Keyboard: characters typed into the console UART (e.g. a minicom session on
 // the board's serial port). Each received byte sets `key` and fires the

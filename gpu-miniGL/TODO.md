@@ -87,9 +87,10 @@ size into a smaller buffer and upscale.
 - Text (`text()`, `textSize()`, fonts) — accepted and ignored today, so
   sketches run without their labels. Needs the texture path (gpu/ M3).
 - Images (`PImage`, `loadImage`) — texture path plus a data source.
-- Mouse — `mouseX`/`mouseY` are pinned to the screen centre and Enter on the
-  console synthesises a click. A real pointer needs an input device (USB HID?
-  encoder?). Key events already work over the console UART.
+- Mouse — `mouseX`/`mouseY` random-walk across the screen (no pointer
+  hardware) and Enter on the console synthesises a click at the cursor. A
+  real pointer still needs an input device (USB HID? encoder?). Key events
+  already work over the console UART.
 - `PShape` / `loadShape`, `createGraphics` (FBOs, cheap — see gpu/ M4),
   `PImage`-based `filter()`. `bezier()`/`bezierVertex()` are done;
   `curve()`/`curveVertex()` (Catmull-Rom) are not.

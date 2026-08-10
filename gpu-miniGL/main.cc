@@ -228,7 +228,8 @@ int main()
 			if (elapsed_us >= 2000000) {
 				const uint32_t avg_us = elapsed_us / frames;
 				print(avg_us ? (1000000 + avg_us / 2) / avg_us : 0, " fps (avg ", avg_us, " us/frame, worst render ",
-					  worst_us, " us), ", be.draws_submitted(), " draw(s), ", be.stream_dwords(), " dwords\n");
+					  worst_us, " us), ", be.draws_submitted(), " draw(s), ", be.stream_dwords(), " dwords, mouse ",
+					  mouseX, ",", mouseY, "\n");
 				t0 = now;
 				worst_us = 0;
 				frames = 0;

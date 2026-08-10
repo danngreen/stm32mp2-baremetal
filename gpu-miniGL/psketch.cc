@@ -189,6 +189,82 @@ int ellipse_segments(float rmax)
 
 } // namespace
 
+// --- the drunken mouse --------------------------------------------------------
+// There is no pointer device, so the cursor takes a random walk. The VELOCITY
+// is what wanders (a small random acceleration each frame, lightly damped),
+// not the position -- integrating a wandering velocity gives a smooth drifting
+// path, whereas jittering the position directly just looks like noise and
+// makes mouse-following sketches twitch in place.
+//
+// It runs on its own generator, deliberately NOT the sketch's `random()`: a
+// sketch's own random sequence must not shift because the cursor moved, or
+// every seeded sketch would draw differently frame to frame.
+namespace
+{
+uint32_t mouse_rng = 0x1BADB002;
+float mouse_x = -1, mouse_y = -1; // <0 = not yet placed
+float mouse_vx = 0, mouse_vy = 0;
+
+float mouse_random(float lo, float hi)
+{
+	mouse_rng ^= mouse_rng << 13;
+	mouse_rng ^= mouse_rng >> 17;
+	mouse_rng ^= mouse_rng << 5;
+	return lo + (hi - lo) * (float(mouse_rng >> 8) / 16777216.0f);
+}
+
+void mouse_walk()
+{
+	if (width <= 0 || height <= 0)
+		return;
+	if (mouse_x < 0) { // first frame: start at the centre, at rest
+		mouse_x = float(width) / 2;
+		mouse_y = float(height) / 2;
+	}
+
+	pmouseX = mouseX;
+	pmouseY = mouseY;
+
+	// Scale the step with the panel so the walk covers the screen at a similar
+	// rate whatever the resolution.
+	const float accel = float(width) / 1200.0f; // ~0.6 px/frame^2 at 720
+	const float top_speed = float(width) / 120.0f; // ~6 px/frame at 720
+
+	mouse_vx = mouse_vx * 0.96f + mouse_random(-accel, accel);
+	mouse_vy = mouse_vy * 0.96f + mouse_random(-accel, accel);
+	const float speed = sqrt(mouse_vx * mouse_vx + mouse_vy * mouse_vy);
+	if (speed > top_speed) { // clamp, so it drifts rather than bolting
+		mouse_vx *= top_speed / speed;
+		mouse_vy *= top_speed / speed;
+	}
+
+	mouse_x += mouse_vx;
+	mouse_y += mouse_vy;
+
+	// Bounce off the edges: reflecting the velocity keeps the walk inside the
+	// window without it sticking to a wall, which clamping alone would do.
+	if (mouse_x < 0) {
+		mouse_x = 0;
+		mouse_vx = -mouse_vx;
+	} else if (mouse_x > float(width - 1)) {
+		mouse_x = float(width - 1);
+		mouse_vx = -mouse_vx;
+	}
+	if (mouse_y < 0) {
+		mouse_y = 0;
+		mouse_vy = -mouse_vy;
+	} else if (mouse_y > float(height - 1)) {
+		mouse_y = float(height - 1);
+		mouse_vy = -mouse_vy;
+	}
+
+	mouseX = int(mouse_x);
+	mouseY = int(mouse_y);
+	mouseDX = mouseX - pmouseX;
+	mouseDY = mouseY - pmouseY;
+}
+} // namespace
+
 // --- time ---------------------------------------------------------------------
 int millis()
 {
@@ -1415,10 +1491,7 @@ void psk_frame_begin()
 {
 	pend_lines.clear(); // defensive; psk_frame_end() flushed the last frame
 
-	// No input device yet: the mouse sits at the screen center. Sketches that
-	// map() from mouseX/mouseY get their mid-range behavior.
-	mouseX = width / 2;
-	mouseY = height / 2;
+	mouse_walk();
 
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

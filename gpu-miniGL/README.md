@@ -74,10 +74,20 @@ sketch's `keyPressed()`, and is echoed to the console (`key: 'r'`). The
 receiver is polled from the frame loop (`uart_getchar()` in
 `shared/print/uart_print.c`), so no interrupt plumbing was needed.
 
-**Enter synthesises a mouse click** at the cursor, which is pinned to the
-screen centre until there is a real pointer. Without it a whole category of
-examples is unreachable — Multiple_Particle_Systems draws literally nothing
-until something calls `mousePressed()`.
+**The cursor takes a drunken walk.** With no pointer device, `mouseX`/`mouseY`
+random-walk across the screen: a small random acceleration each frame, lightly
+damped, integrated into a position that bounces off the edges. It is the
+velocity that wanders, not the position — integrating a wandering velocity
+drifts smoothly, whereas jittering the position directly just makes
+mouse-following sketches twitch in place. It runs on its own generator,
+deliberately not the sketch's `random()`, so no seeded sketch changes
+behaviour because the cursor moved. `pmouseX`/`pmouseY` and `mouseDX`/`mouseDY`
+are live too.
+
+**Enter synthesises a mouse click** at wherever the cursor currently is.
+Without it a whole category of examples is unreachable —
+Multiple_Particle_Systems draws literally nothing until something calls
+`mousePressed()`.
 
 There are no key-up or button-up events over a serial line, so `_keyPressed`
 and `_mousePressed` are true only during the frame the event arrived in. They
@@ -252,7 +262,7 @@ GL matrix stack, and `fill`/`stroke` are two persistent colors applied around
 each shape. Colors go through `colorMode` (default RGB 0–255, HSB supported),
 origin is top-left with +y down, and alpha blending is on by default — all
 Processing's defaults, so `fill(255, 204)` just works. `mouseX`/`mouseY`
-exist but sit at the screen center until there is an input device. `size()`,
+wander on their own (see below). `size()`,
 `smooth()`/`noSmooth()` are accepted and ignored (the panel decides the size).
 
 When processing.cpp's own drawing functions get lifted onto mini-GL (the real
