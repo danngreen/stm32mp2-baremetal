@@ -41,14 +41,27 @@ constexpr uint32_t RifscId_DSI = 81;
 // firewall. The DSI is not a DMA master (the LTDC feeds it pixels over DPI), so
 // it needs no RIMU entry.
 //   RISUP 80 = LTDC common, 119 = LTDC layers, RifscId_DSI = DSI host
-//   RIMU  11 = LTDC_L1/L2 master
+//   RIMU  11..13 = the LTDC's three bus initiators
+//
+// The LTDC is not one DMA master but three, each behind its own RIMU: layers
+// 1/2, layer 3, and the ROTATION engine. ST's own reference device tree drives
+// exactly these three (11, 12, 13) and leaves the rest RIF_UNUSED.
+//
+// Only 11 used to be configured, which is all a non-rotated setup needs -- and
+// it made hardware rotation fail in a way that looked nothing like a firewall
+// problem: the display stayed black, no error flags, no FIFO underrun, but
+// RISAF4's illegal-access register held the rotation buffer's DDR offset and
+// the buffer itself was never written. The rotation engine's writes were being
+// refused. Marking all three masters secure+privileged fixes it.
 void display_rif_setup()
 {
 	RISC->SECCFGR[80 / 32] |= (1u << (80 % 32));
 	RISC->SECCFGR[RifscId_DSI / 32] |= (1u << (RifscId_DSI % 32));
 	RISC->SECCFGR[119 / 32] |= (1u << (119 % 32));
-	auto attr = RIMC->ATTR[11];
-	RIMC->ATTR[11] = (attr & ~RIMC_ATTR_CIDSEL) | RIMC_ATTR_MSEC | RIMC_ATTR_MPRIV;
+	for (unsigned rimu = 11; rimu <= 13; rimu++) {
+		auto attr = RIMC->ATTR[rimu];
+		RIMC->ATTR[rimu] = (attr & ~RIMC_ATTR_CIDSEL) | RIMC_ATTR_MSEC | RIMC_ATTR_MPRIV;
+	}
 }
 
 uint32_t display_clocks_setup()
