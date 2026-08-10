@@ -56,6 +56,8 @@ int color_mode = RGB;
 float cmax[4] = {255, 255, 255, 255}; // per-channel ranges from colorMode()
 int ellipse_mode = CENTER;
 int rect_mode = CORNER;
+// True while pixels[] holds the frame's image (see psk_live_pixels).
+bool pixels_live = false;
 unsigned frame_period_us = 0; // 0 = every vblank
 uint32_t rng = 0x243F6A88;	  // pi, why not
 
@@ -535,6 +537,7 @@ color lerpColor(int c1, int c2, float amt)
 
 void background(float r, float g, float b)
 {
+	pixels_live = false; // a clear supersedes any pixel image
 	float c[4];
 	to_rgba(r, g, b, cmax[3], c);
 	glClearColor(c[0], c[1], c[2], 1.0f);
@@ -543,6 +546,7 @@ void background(float r, float g, float b)
 }
 void background(float gray)
 {
+	pixels_live = false;
 	float c[4];
 	gray_rgba(gray, cmax[3], c);
 	glClearColor(c[0], c[1], c[2], 1.0f);
@@ -551,6 +555,7 @@ void background(float gray)
 }
 void background(int c)
 {
+	pixels_live = false;
 	if (!is_packed(c)) {
 		background(float(c));
 		return;
@@ -1524,10 +1529,6 @@ void psk_frame_end()
 
 // --- direct pixel access ------------------------------------------------------
 Array<int> pixels;
-namespace
-{
-bool pixels_dirty = false;
-}
 
 void loadPixels()
 {
@@ -1541,13 +1542,14 @@ void loadPixels()
 void updatePixels()
 {
 	if (pixels.length == width * height)
-		pixels_dirty = true;
+		pixels_live = true;
 }
 
-const int *psk_take_pixels()
+const int *psk_live_pixels()
 {
-	if (!pixels_dirty)
-		return nullptr;
-	pixels_dirty = false;
-	return pixels.data();
+	// Deliberately NOT one-shot. A pixel image is the frame's content until
+	// something replaces it, exactly like the render target -- and a sketch
+	// that paints pixels in setup() and leaves draw() empty (Mandelbrot)
+	// would otherwise have its image resolved over on the very next frame.
+	return pixels_live ? pixels.data() : nullptr;
 }

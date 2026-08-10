@@ -131,6 +131,13 @@ int main()
 	sketch_setup();
 	psk_frame_end();
 	mglEndFrame();
+	// A sketch may paint its whole image with pixels[] in setup() (Mandelbrot
+	// does, under noLoop()), so present that here as well as in the loop.
+	if (const int *px = psk_live_pixels()) {
+		auto dst = fbs[0].span<uint32_t>();
+		std::copy_n(reinterpret_cast<const uint32_t *>(px), size_t(HActive) * VActive, dst.begin());
+		fbs[0].cpu_fini(etna::RelocWrite);
+	}
 	// A "static mode" sketch does all its drawing here and leaves draw()
 	// empty, so this is the only evidence it rendered anything at all.
 	print("setup frame: ", be.draws_submitted(), " draw(s), ", be.stream_dwords(), " dwords",
@@ -175,7 +182,7 @@ int main()
 
 		// updatePixels(): the sketch's own pixel array, straight into the
 		// buffer about to be scanned out -- after the resolve, so it wins.
-		if (const int *px = psk_take_pixels()) {
+		if (const int *px = psk_live_pixels()) {
 			auto dst = fbs[cur].span<uint32_t>();
 			std::copy_n(reinterpret_cast<const uint32_t *>(px), size_t(HActive) * VActive, dst.begin());
 			fbs[cur].cpu_fini(etna::RelocWrite);

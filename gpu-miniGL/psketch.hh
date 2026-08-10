@@ -482,9 +482,10 @@ void psk_frame_begin();
 unsigned psk_frame_period_us();
 // True when the sketch asked for P3D: the harness needs a depth buffer.
 bool psk_wants_3d();
-// Non-null only when the sketch called updatePixels() this frame: the harness
-// copies it into the scanout buffer after the resolve. Clears the flag.
-const int *psk_take_pixels();
+// The sketch's pixel image, non-null from updatePixels() until the next
+// background() retires it. The harness copies it into the scanout buffer
+// after the resolve, every frame -- it is frame content, not a one-off event.
+const int *psk_live_pixels();
 // After sketch_draw(), before the backend ends the frame: emits any deferred
 // stroke geometry (see psketch.cc's deferred-strokes note).
 void psk_frame_end();
