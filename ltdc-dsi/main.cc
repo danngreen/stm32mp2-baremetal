@@ -28,6 +28,8 @@ namespace
 
 constexpr uint32_t FbAddr = 0x90000000;
 
+#define PATTERN_TEST 1
+
 // A test pattern that makes scanout bugs obvious: RGB gradient field, 1px white
 // border (offset/timing errors show as a missing/wrapped edge), and the x^y hash
 // in green (stride errors scramble it).
@@ -36,11 +38,27 @@ void fill_test_pattern(std::span<uint32_t> fb)
 	using namespace Panel;
 	for (uint32_t y = 0; y < VActive; y++)
 		for (uint32_t x = 0; x < HActive; x++) {
+
+#if PATTERN_TEST == 1
 			uint32_t r = (x * 255) / (HActive - 1);
 			uint32_t b = (y * 255) / (VActive - 1);
 			uint32_t px = 0xFF000000 | (r << 16) | (((x ^ y) & 0xFF) << 8) | b; // 0xAARRGGBB
 			if (x == 0 || y == 0 || x == HActive - 1 || y == VActive - 1)
 				px = 0xFFFFFFFF; // 1px white border
+
+#elif PATTERN_TEST == 2
+			// border around edges, and center-line cross
+			// every other pixel is black/white
+			uint32_t px = 0;
+			if (x == HActive / 2)
+				px = 0xFFFF00FF;
+			else if (y == VActive / 2)
+				px = 0xFF00FFFF;
+			else if (y >= VActive - 2 || y <= 1 || x <= 1 || x >= HActive - 2)
+				px = 0xFFFF0000;
+			else
+				px = ((y & 1) && (x & 1)) ? 0xFFFFFFFF : 0xFF000000;
+#endif
 			fb[y * HActive + x] = px;
 		}
 	clean_dcache_range(reinterpret_cast<void *>(FbAddr), HActive * VActive * 4);
@@ -112,6 +130,4 @@ int main()
 }
 
 extern "C" void assert_failed(uint8_t *file, uint32_t line)
-{
-	print("assert failed: ", file, ":", int(line), "\n");
-}
+{ print("assert failed: ", file, ":", int(line), "\n"); }
