@@ -25,10 +25,10 @@ namespace Panel
 
 // ---- display mode ----------------------------------------------------------
 constexpr uint32_t HActive = 720;
-constexpr uint32_t HFront = 120; // HFP
+constexpr uint32_t HFront = 190; // HFP: was 120, =>180-190 with HBack=20-40 makes it stable.
 constexpr uint32_t HSync = 20;	 // HSA
-// HBack does strange things... FIXME:
-constexpr uint32_t HBack = 20; // HBP: 18-78. >80 is h-wrapped but clean edges
+
+constexpr uint32_t HBack = 40;
 
 constexpr uint32_t VActive = 1280;
 constexpr uint32_t VFront = 20; // VFP
