@@ -166,6 +166,243 @@ bool triangle_test(Gpu &gpu)
 }
 
 // =============================================================================
+//  Linear render target (LINEAR_PE)
+// =============================================================================
+// Can the pixel engine write an untiled target, so the per-frame RS resolve
+// can be dropped entirely?
+//
+// PE_COLOR_FORMAT has no linear bit -- only SUPER_TILED. The layout is chosen
+// by PE_LOGIC_OP.SINGLE_BUFFER instead: Mesa emits 2 for a tiled target and 1
+// for a linear one, gated on the LINEAR_PE feature (chipMinorFeatures2 bit 4),
+// which this core reports.
+//
+// The test is the verified triangle_test geometry rendered into a target with
+// a LINEAR stride (no 16x4 tile padding) and read back with NO resolve. If the
+// PE really wrote linear, the shape check that normally runs on the resolved
+// image passes on the render target itself.
+bool linear_rt_test(Gpu &gpu)
+{
+	constexpr uint32_t W = 64, H = 64;
+	constexpr uint32_t stride = W * 4; // LINEAR: exactly one row, no padding
+	constexpr uint32_t CLEAR = 0xFF0000FF;
+
+	Bo rt = gpu.alloc(stride * H);
+	Bo vtx = gpu.alloc(3 * 3 * 4);
+	Bo vs = gpu.alloc(sizeof(kVsCode));
+	Bo ps = gpu.alloc(sizeof(kPsCode));
+	if (!rt || !vtx || !vs || !ps)
+		return false;
+
+	std::ranges::fill(rt.span<uint32_t>(), CLEAR);
+	rt.cpu_fini(RelocWrite);
+
+	const std::array<float, 9> verts = {-0.8f, -0.8f, 0.5f, 0.8f, -0.8f, 0.5f, 0.0f, 0.8f, 0.5f};
+	std::ranges::copy(verts, vtx.span<float>().begin());
+	vtx.cpu_fini(RelocWrite);
+	std::ranges::copy(kVsCode, vs.span<uint32_t>().begin());
+	vs.cpu_fini(RelocWrite);
+	std::ranges::copy(kPsCode, ps.span<uint32_t>().begin());
+	ps.cpu_fini(RelocWrite);
+
+	const std::array<float, 4> red = {1.0f, 0.0f, 0.0f, 1.0f};
+	auto cs = gpu.new_cmd_stream(1024);
+	emit_triangle(cs, rt, stride, vtx, 12, vs, ps, W, H, red, 3, nullptr, 0, /*linear_rt=*/true);
+
+	const auto start = read_cntpct();
+	if (!gpu.submit_and_wait(cs)) {
+		gpu.dump_status("linear RT draw");
+		return false;
+	}
+	print("linear-RT triangle drawn in ", (uint32_t)(read_cntpct() - start), " ticks\n");
+
+	rt.cpu_prep(RelocRead);
+	auto px = rt.span<uint32_t>();
+	uint32_t drawn = 0, sample = 0;
+	for (uint32_t i = 0; i < W * H; i++)
+		if (px[i] != CLEAR) {
+			drawn++;
+			if (!sample)
+				sample = px[i];
+		}
+	print("linear RT: ", drawn, " of ", W * H, " pixels drawn, first 0x", Hex{sample}, "\n");
+	if (drawn == 0) {
+		print("LINEAR_PE: nothing drawn -- the PE did not write this target\n");
+		return false;
+	}
+
+	// The real question: is the CONTENT linear? Read the target directly, with
+	// no resolve, and check the fragments landed inside the window-space
+	// triangle. A tiled write would scatter them into 16x4 tile order and fail.
+	const std::array<float, 6> ndc_xy = {verts[0], verts[1], verts[3], verts[4], verts[6], verts[7]};
+	if (!verify_shape(px, W, H, ndc_xy, sample, CLEAR)) {
+		print("LINEAR_PE: pixels are present but NOT in linear order"
+			  " -- SINGLE_BUFFER(1) did not switch the layout\n");
+		return false;
+	}
+	print("LINEAR_PE WORKS: the PE wrote an untiled image -- no RS resolve needed. \\o/\n");
+	return true;
+}
+
+// -----------------------------------------------------------------------------
+// Linear RT validation: does it hold at real panel strides, and with depth?
+//
+// The first experiment used a 64x64 target (256-byte stride) and no depth
+// buffer, which is not enough to rely on. Two things could still bite:
+//   - stride. Mesa gates linear render targets on stride alignment when
+//     tile-status is in use. We never enable TS, so it should not apply, but
+//     the panel strides (720 -> 2880 B, 1024 -> 4096 B) are untested.
+//   - depth. SINGLE_BUFFER selects the PE's layout; whether that also moves
+//     the DEPTH buffer's layout is unknown, and P3D now depends on depth.
+static bool linear_at(Gpu &gpu, uint32_t W, uint32_t H, const char *label)
+{
+	const uint32_t stride = W * 4; // linear: exactly one row
+	constexpr uint32_t CLEAR = 0xFF0000FF;
+
+	Bo rt = gpu.alloc(stride * H);
+	Bo vtx = gpu.alloc(3 * 3 * 4);
+	Bo vs = gpu.alloc(sizeof(kVsCode));
+	Bo ps = gpu.alloc(sizeof(kPsCode));
+	if (!rt || !vtx || !vs || !ps) {
+		print("  ", label, " ", W, "x", H, " (stride ", stride, "): ALLOC FAILED\n");
+		return false;
+	}
+	std::ranges::fill(rt.span<uint32_t>(), CLEAR);
+	rt.cpu_fini(RelocWrite);
+
+	const std::array<float, 9> verts = {-0.8f, -0.8f, 0.5f, 0.8f, -0.8f, 0.5f, 0.0f, 0.8f, 0.5f};
+	std::ranges::copy(verts, vtx.span<float>().begin());
+	vtx.cpu_fini(RelocWrite);
+	std::ranges::copy(kVsCode, vs.span<uint32_t>().begin());
+	vs.cpu_fini(RelocWrite);
+	std::ranges::copy(kPsCode, ps.span<uint32_t>().begin());
+	ps.cpu_fini(RelocWrite);
+
+	const std::array<float, 4> red = {1.0f, 0.0f, 0.0f, 1.0f};
+	auto cs = gpu.new_cmd_stream(1024);
+	emit_triangle(cs, rt, stride, vtx, 12, vs, ps, W, H, red, 3, nullptr, 0, /*linear_rt=*/true);
+	const auto t0 = read_cntpct();
+	if (!gpu.submit_and_wait(cs)) {
+		gpu.dump_status("linear stride draw");
+		return false;
+	}
+	const uint32_t ticks = (uint32_t)(read_cntpct() - t0);
+
+	rt.cpu_prep(RelocRead);
+	auto px = rt.span<uint32_t>();
+	uint32_t drawn = 0, sample = 0;
+	for (uint32_t i = 0; i < W * H; i++)
+		if (px[i] != CLEAR) {
+			drawn++;
+			if (!sample)
+				sample = px[i];
+		}
+	const std::array<float, 6> ndc_xy = {verts[0], verts[1], verts[3], verts[4], verts[6], verts[7]};
+	const bool shape_ok = drawn && verify_shape(px, W, H, ndc_xy, sample, CLEAR);
+	print("  ", label, " ", W, "x", H, " (stride ", stride, "): ", drawn, " px, ", ticks, " ticks -- ",
+		  shape_ok ? "linear OK" : "NOT LINEAR", "\n");
+	return shape_ok;
+}
+
+bool linear_rt_stride_test(Gpu &gpu)
+{
+	print("linear RT across strides (verify_shape reads the RT directly, no resolve):\n");
+	bool ok = true;
+	// 64 is the known-good case; 100 is deliberately awkward (400 B, not a
+	// multiple of 64); 720 and 1024 are the two real panel widths.
+	ok &= linear_at(gpu, 64, 64, "small ");
+	ok &= linear_at(gpu, 100, 64, "odd   ");
+	ok &= linear_at(gpu, 720, 64, "dsi-w ");
+	ok &= linear_at(gpu, 1024, 64, "lvds-w");
+	// And a genuinely full-screen target, the thing this is all for.
+	ok &= linear_at(gpu, 720, 1280, "FULL  ");
+	if (!ok) {
+		print("FAILED: linear RT does not hold at every stride\n");
+		return false;
+	}
+	print("linear RT verified at every stride including full screen. \\o/\n");
+	return true;
+}
+
+// Same idea, but with a depth buffer bound: near triangle must occlude the far
+// one AND the colour output must still be linear.
+bool linear_rt_depth_test(Gpu &gpu)
+{
+	constexpr uint32_t W = 720, H = 64;
+	constexpr uint32_t stride = W * 4;
+	constexpr uint32_t dstride = W * 2; // D16, linear too
+	constexpr uint32_t CLEAR = 0xFF0000FF;
+
+	Bo rt = gpu.alloc(stride * H);
+	Bo depth = gpu.alloc(dstride * H);
+	Bo vnear = gpu.alloc(3 * 3 * 4), vfar = gpu.alloc(3 * 3 * 4);
+	Bo vs = gpu.alloc(sizeof(kVsCode)), ps = gpu.alloc(sizeof(kPsCode));
+	if (!rt || !depth || !vnear || !vfar || !vs || !ps)
+		return false;
+
+	std::ranges::fill(rt.span<uint32_t>(), CLEAR);
+	rt.cpu_fini(RelocWrite);
+	std::ranges::fill(depth.span<uint16_t>(), uint16_t(0xFFFF));
+	depth.cpu_fini(RelocWrite);
+
+	// Same geometry as triangle_depth_test: red in front, green behind it.
+	const std::array<float, 9> near_v = {-0.8f, -0.8f, 0.3f, 0.8f, -0.8f, 0.3f, 0.0f, 0.8f, 0.3f};
+	const std::array<float, 9> far_v = {-0.8f, 0.8f, 0.7f, 0.8f, 0.8f, 0.7f, 0.0f, -0.8f, 0.7f};
+	std::ranges::copy(near_v, vnear.span<float>().begin());
+	vnear.cpu_fini(RelocWrite);
+	std::ranges::copy(far_v, vfar.span<float>().begin());
+	vfar.cpu_fini(RelocWrite);
+	std::ranges::copy(kVsCode, vs.span<uint32_t>().begin());
+	vs.cpu_fini(RelocWrite);
+	std::ranges::copy(kPsCode, ps.span<uint32_t>().begin());
+	ps.cpu_fini(RelocWrite);
+
+	const std::array<float, 4> red = {1.0f, 0.0f, 0.0f, 1.0f};
+	const std::array<float, 4> green = {0.0f, 1.0f, 0.0f, 1.0f};
+
+	auto cs = gpu.new_cmd_stream(2048);
+	emit_triangle(cs, rt, stride, vnear, 12, vs, ps, W, H, red, 3, &depth, dstride, /*linear_rt=*/true);
+	if (!gpu.submit_and_wait(cs)) {
+		gpu.dump_status("linear depth near");
+		return false;
+	}
+	cs.reset();
+	emit_triangle(cs, rt, stride, vfar, 12, vs, ps, W, H, green, 3, &depth, dstride, /*linear_rt=*/true);
+	if (!gpu.submit_and_wait(cs)) {
+		gpu.dump_status("linear depth far");
+		return false;
+	}
+
+	rt.cpu_prep(RelocRead);
+	auto px = rt.span<uint32_t>();
+	uint32_t nred = 0, ngreen = 0, nother = 0;
+	for (uint32_t i = 0; i < W * H; i++) {
+		const uint32_t p = px[i];
+		if (p == CLEAR)
+			continue;
+		if (p == 0xFFFF0000u)
+			nred++;
+		else if (p == 0xFF00FF00u)
+			ngreen++;
+		else
+			nother++;
+	}
+	print("linear RT + depth (", W, "x", H, "): ", nred, " red (near), ", ngreen, " green (far), ", nother,
+		  " other\n");
+	if (nred == 0 || ngreen == 0 || nother != 0) {
+		print("FAILED: linear RT with depth did not produce the two expected colours\n");
+		return false;
+	}
+	// The near triangle must have kept its pixels: with depth broken the green
+	// draw would paint over the overlap and red would come out short.
+	if (ngreen >= nred) {
+		print("FAILED: depth test did not occlude -- far triangle covered the near one\n");
+		return false;
+	}
+	print("linear RT works with a depth buffer, and depth still occludes. \\o/\n");
+	return true;
+}
+
+// =============================================================================
 //  Color test
 // =============================================================================
 //

@@ -124,6 +124,7 @@ private:
 		uint32_t vs = 0, vs_words = 0, vs_temps = 0;
 		uint32_t ps = 0, ps_words = 0, ps_temps = 0, ps_out_reg = 0;
 		uint32_t vtx = 0, vtx_stride = 0, pos_components = 0;
+		bool rt_linear = false;
 	};
 
 	static Tracked snapshot(const MeshDraw &d);

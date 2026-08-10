@@ -2,6 +2,9 @@
 #include "etna.hh"
 
 bool triangle_test(etna::Gpu &gpu);
+bool linear_rt_test(etna::Gpu &gpu);
+bool linear_rt_stride_test(etna::Gpu &gpu);
+bool linear_rt_depth_test(etna::Gpu &gpu);
 bool triangle_color_test(etna::Gpu &gpu);
 bool triangle_depth_test(etna::Gpu &gpu);
 bool triangle_texture_test(etna::Gpu &gpu);

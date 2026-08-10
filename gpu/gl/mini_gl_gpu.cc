@@ -114,6 +114,9 @@ bool GpuBackend::init(etna::Gpu &gpu, uint32_t w, uint32_t h, bool with_depth, u
 	ph_ = (h + 3) & ~3u;
 	has_depth_ = with_depth;
 	stream_words_ = stream_words;
+	// The RS fills whole 16-pixel groups, so a linear target is only usable
+	// when one row is an exact number of them. Both panels qualify (720, 1024).
+	linear_ok_ = (w % 16) == 0;
 
 	rt_ = gpu.alloc(pw_ * 4 * ph_);
 	fb_ = gpu.alloc(w_ * 4 * h_);
@@ -148,6 +151,8 @@ void GpuBackend::begin_frame()
 	draws_ = 0;
 	stream_dwords_ = 0;
 	overflow_ = false;
+	mode_ = Mode::Undecided;
+	target_ = nullptr;
 	cs_->reset();
 	if (ctx_)
 		ctx_->~Context();
@@ -171,6 +176,43 @@ bool GpuBackend::flush_stream()
 	return ok;
 }
 
+// Decide the frame's mode, once, at whichever of clear()/draw() comes first.
+void GpuBackend::ensure_target(bool clearing)
+{
+	if (mode_ != Mode::Undecided)
+		return;
+
+	etna::Bo *const present = scanout_ ? scanout_ : &fb_;
+	const uint32_t present_stride = scanout_ ? scanout_stride_ : w_ * 4;
+	// blit()/clear() address linear surfaces as width*4 per row, so a padded
+	// scanout buffer cannot be a direct target.
+	const bool present_packed = present_stride == w_ * 4;
+
+	if (!linear_ok_) {
+		mode_ = Mode::Tiled;
+		target_ = &rt_;
+		target_stride_ = pw_ * 4;
+		return;
+	}
+
+	if (clearing && present_packed && direct_linear_) {
+		mode_ = Mode::Direct;
+		target_ = present;
+		target_stride_ = present_stride;
+		return;
+	}
+
+	// Building on what is already on screen, so we need last frame's pixels
+	// where we are about to draw. That is the tiled render target, which the
+	// resolve presents -- and measurement says to prefer it anyway: a linear
+	// canvas plus a linear->linear blit was 2.9x SLOWER than tiled + resolve
+	// (Coordinates, a copy-only frame: 8930 us vs 3125 us), and rendering into
+	// a linear target costs fill rate on top (Game_Of_Life 143 -> 216 ms).
+	mode_ = Mode::Tiled;
+	target_ = &rt_;
+	target_stride_ = pw_ * 4;
+}
+
 void GpuBackend::clear(uint32_t mask, float r, float g, float b, float a, float)
 {
 	if (!ctx_)
@@ -181,12 +223,19 @@ void GpuBackend::clear(uint32_t mask, float r, float g, float b, float a, float)
 	if (draws_ > 0)
 		flush_stream();
 
+	// A clear as the frame's first act means last frame's pixels are dead --
+	// which is exactly what lets us render straight to the scanout buffer.
+	ensure_target(/*clearing=*/true);
+
 	if (mask & GL_COLOR_BUFFER_BIT) {
 		auto u8 = [](float v) { return uint32_t(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f) & 0xFFu; };
 		const uint32_t argb = (u8(a) << 24) | (u8(r) << 16) | (u8(g) << 8) | u8(b);
 		// A solid colour is tiling-invariant, so filling the padded extent of
-		// the tiled target as if it were linear is correct.
-		etna::clear(*cs_, rt_, pw_, ph_, argb);
+		// a tiled target as if it were linear is correct.
+		if (mode_ == Mode::Tiled)
+			etna::clear(*cs_, rt_, pw_, ph_, argb);
+		else
+			etna::clear(*cs_, *target_, w_, h_, argb);
 		gpu_->submit_and_wait(*cs_);
 		cs_->reset();
 	}
@@ -228,9 +277,12 @@ void GpuBackend::draw(const BatchState &s, std::span<const float> verts, uint32_
 		}
 	}
 
+	ensure_target(/*clearing=*/false);
+
 	etna::MeshDraw d{};
-	d.rt = &rt_;
-	d.rt_stride = pw_ * 4;
+	d.rt = target_;
+	d.rt_stride = target_stride_;
+	d.rt_linear = mode_ != Mode::Tiled;
 	d.vtx = &vb;
 	d.vtx_stride = kFloatsPerVertex * 4;
 	d.pos_components = 4; // clip-space xyzw; the GPU does the perspective divide
@@ -255,7 +307,9 @@ void GpuBackend::draw(const BatchState &s, std::span<const float> verts, uint32_
 
 	if (has_depth_) {
 		d.depth = &depth_;
-		d.depth_stride = pw_ * 2;
+		// Depth follows the colour layout; the buffer is allocated at the
+		// padded size so the linear extent always fits.
+		d.depth_stride = (mode_ == Mode::Tiled) ? pw_ * 2 : w_ * 2;
 		d.depth_state = {.test = s.depth_test, .write = s.depth_write, .func = to_compare(s.depth_func)};
 	}
 
@@ -308,15 +362,32 @@ void GpuBackend::end_frame()
 	else
 		stream_dwords_ += cs_->offset();
 
-	// Untile into the linear framebuffer a display controller can scan out --
-	// either the internal one or, when set_scanout() was called, an external
-	// (e.g. LTDC back) buffer.
 	etna::Bo &dst = scanout_ ? *scanout_ : fb_;
 	const uint32_t dst_stride = (scanout_ && scanout_stride_) ? scanout_stride_ : w_ * 4;
 	cs_->reset();
-	etna::resolve(*cs_, dst, rt_, w_, h_, pw_ * 4, dst_stride);
-	if (!gpu_->submit_and_wait(*cs_))
-		gpu_->dump_status("mini-gl resolve");
+	switch (mode_) {
+		case Mode::Direct:
+			// Already written straight into the buffer about to be scanned
+			// out: no resolve, no copy. This is the whole point.
+			last_present_ = target_;
+			break;
+		case Mode::Tiled:
+			// Untile into the linear buffer a display controller can scan out.
+			etna::resolve(*cs_, dst, rt_, w_, h_, pw_ * 4, dst_stride);
+			if (!gpu_->submit_and_wait(*cs_))
+				gpu_->dump_status("mini-gl resolve");
+			last_present_ = &dst;
+			break;
+		case Mode::Undecided:
+			// The sketch neither cleared nor drew -- a static sketch that
+			// painted once in setup. Its image is in the tiled RT, so present
+			// it the same way, or the panel shows a stale buffer.
+			etna::resolve(*cs_, dst, rt_, w_, h_, pw_ * 4, dst_stride);
+			if (!gpu_->submit_and_wait(*cs_))
+				gpu_->dump_status("mini-gl present");
+			last_present_ = &dst;
+			break;
+	}
 
 	// cs_ lives on (see init); only the Context is per-frame.
 	ctx_->~Context();

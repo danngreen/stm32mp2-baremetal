@@ -56,6 +56,13 @@ public:
 		return w_ * 4;
 	}
 
+	// Render clear-first frames straight into the scanout buffer, skipping the
+	// resolve. Off by default -- see direct_linear_ below for the trade.
+	void set_direct_linear(bool on)
+	{
+		direct_linear_ = on;
+	}
+
 	// Resolve the NEXT end_frame() into an external linear buffer instead of
 	// framebuffer() -- for double-buffered scanout, point this at the back
 	// buffer each frame. `stride` 0 means w*4; nullptr reverts to the internal
@@ -80,19 +87,49 @@ public:
 		return overflow_;
 	}
 
+	// How this frame's pixels are being produced. Chosen at the frame's FIRST
+	// surface-touching call, because that is the moment we know whether the
+	// previous frame's image still matters:
+	//
+	//   Direct  -- the frame opened with a full-surface clear, so nothing from
+	//              last frame survives. Render straight into the scanout buffer,
+	//              linear, and present with no copy at all.
+	//   Tiled   -- the frame opened with a draw, so it is building on the image
+	//              already on screen: render into the persistent TILED target
+	//              and resolve, as before. Also the fallback when the width is
+	//              not a multiple of 16, or when direct linear is switched off.
+	//
+	// This is observed, never predicted, so a sketch that clears only on some
+	// frames (Wolfram clears when its automaton wraps) is handled frame by frame.
+	enum class Mode { Undecided, Direct, Tiled };
+
 private:
 	// Flush the current stream and start a new one -- used when a frame needs
 	// more command space than one stream (or one ring block) can hold.
 	bool flush_stream();
+	// Bind this frame's render target, deciding the mode if it is still open.
+	void ensure_target(bool clearing);
 
 	etna::Gpu *gpu_ = nullptr;
 	uint32_t w_ = 0, h_ = 0;
 	uint32_t pw_ = 0, ph_ = 0; // tiled RT padding (w->16, h->4)
 	bool has_depth_ = false;
+	bool linear_ok_ = false; // RS can fill exactly one row (w % 16 == 0)
 
 	etna::Bo rt_{}, depth_{}, fb_{}, vs_{}, ps_{};
 	etna::Bo *scanout_ = nullptr;
 	uint32_t scanout_stride_ = 0;
+
+	Mode mode_ = Mode::Undecided;
+	etna::Bo *target_ = nullptr;   // where this frame's draws land
+	uint32_t target_stride_ = 0;
+	etna::Bo *last_present_ = nullptr;
+	// Direct linear rendering is a TRADE, not a free win: it removes the
+	// per-frame resolve (~3 ms at 720x1280) but the PE writes an untiled
+	// target more slowly, because each tile-sized write scatters across rows.
+	// Measured: sparse frames gain (Flocking 9.7 -> 6.6 ms, Brownian 5.6 ->
+	// 3.4 ms), fill-heavy frames lose (Rotate_Push_Pop 10.8 -> 13.5 ms).
+	bool direct_linear_ = false;
 	etna::Arena arena_{};
 	uint32_t stream_words_ = 0;
 

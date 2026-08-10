@@ -24,7 +24,10 @@ void emit_triangle(CmdStream &cs,
 				   std::span<const float, 4> color,
 				   uint32_t vertex_count,
 				   const Bo *depth = nullptr,
-				   uint32_t depth_stride = 0);
+				   uint32_t depth_stride = 0,
+				   // Experiment: render straight to a LINEAR target (no tiling,
+				   // so no RS resolve afterwards). See PE_LOGIC_OP in gpu_regs_3d.hh.
+				   bool linear_rt = false);
 
 void emit_triangle_color(CmdStream &cs,
 						 const Bo &rt,
@@ -65,6 +68,10 @@ struct MeshDraw {
 	// hardware and it does the divide). Colour follows position in the
 	// vertex, so this also moves the colour attribute's offset.
 	uint32_t pos_components = 3;
+	// Render target memory layout. false = tiled (needs an RS resolve before
+	// scanout); true = LINEAR, written straight out in row-major order. See
+	// PE_LOGIC_OP in gpu_regs_3d.hh.
+	bool rt_linear = false;
 	const Bo *vs = nullptr;
 	uint32_t vs_words = 0; // VS length in dwords
 	uint32_t vs_temps = 4;

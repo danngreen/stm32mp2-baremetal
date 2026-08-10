@@ -95,6 +95,13 @@ int main()
 		print("FAILED: mini-GL backend init\n");
 		panic();
 	}
+#ifdef DIRECT_LINEAR
+	// make BOARD=devboard DIRECT_LINEAR=1 -- render clear-first frames straight
+	// into the scanout buffer, skipping the resolve. A trade, not a free win:
+	// see set_direct_linear() in gl/mini_gl_gpu.hh.
+	be.set_direct_linear(true);
+	print("direct-linear scanout: ON\n");
+#endif
 	mglInit(be);
 
 	// Double-buffered scanout. The backend resolves into the back buffer each

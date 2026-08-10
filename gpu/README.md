@@ -379,6 +379,17 @@ exactly the register sequence, in the same order, that the pipe emitted before
 dirty tracking existed. The five hardware-verified 3D tests all go through
 `emit_mesh`, so they are the regression suite for the full-emit path.
 
+**The PE can render to a LINEAR target.** `PE_COLOR_FORMAT` has no linear
+bit -- the layout lives in `PE_LOGIC_OP.SINGLE_BUFFER` (2 = tiled, 1 =
+linear), gated on the LINEAR_PE feature, chipMinorFeatures2 bit 4, which this
+core reports. `linear_rt_test` / `linear_rt_stride_test` /
+`linear_rt_depth_test` verify it by reading the render target back with NO
+resolve and running the same shape check the resolved image gets: it holds at
+every stride tried (256 B to 4096 B, including a deliberately unaligned
+400 B) up to a full 720x1280 screen, and with a depth buffer bound. Useful,
+but not a free win -- the PE writes untiled targets more slowly, so it only
+pays on low-fill frames; see gpu-miniGL/TODO.md for the numbers.
+
 **Vertex layout is per-draw.** `MeshDraw::pos_components` picks a 3- or
 4-float position. With 3 the vertex fetch supplies `w = 1`, which is all an
 ortho projection ever needs and is what every test here uses. A perspective

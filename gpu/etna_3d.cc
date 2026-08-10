@@ -181,7 +181,8 @@ void emit_triangle(CmdStream &cs,
 				   std::span<const float, 4> color,
 				   uint32_t vertex_count,
 				   const Bo *depth, // defaults live in etna_3d.hh
-				   uint32_t depth_stride)
+				   uint32_t depth_stride,
+				   bool linear_rt)
 {
 	emit_reset(cs);
 
@@ -263,7 +264,7 @@ void emit_triangle(CmdStream &cs,
 	cs.set_state(PE_HDEPTH_CONTROL, 0);
 	cs.set_state_reloc(PE_PIPE_COLOR_ADDR0, {&rt, static_cast<uint32_t>(RelocRead | RelocWrite), 0});
 	cs.set_state(PE_STENCIL_CONFIG_EXT, 0);
-	cs.set_state(PE_LOGIC_OP, PE_LOGIC_OP_COPY_SINGLEBUF);
+	cs.set_state(PE_LOGIC_OP, linear_rt ? PE_LOGIC_OP_COPY_LINEAR : PE_LOGIC_OP_COPY_SINGLEBUF);
 	cs.set_state(PE_DITHER0, 0xFFFFFFFF);
 	cs.set_state(PE_DITHER1, 0xFFFFFFFF);
 	cs.set_state(PE_STENCIL_CONFIG_EXT2, 0);
@@ -716,6 +717,7 @@ Context::Tracked Context::snapshot(const MeshDraw &d)
 		.vtx = bo_addr(d.vtx),
 		.vtx_stride = d.vtx_stride,
 		.pos_components = d.pos_components,
+		.rt_linear = d.rt_linear,
 	};
 }
 
@@ -725,7 +727,7 @@ uint32_t Context::compute_dirty(const Tracked &t, const MeshDraw &d) const
 
 	if (t.rt != cur_.rt || t.rt_stride != cur_.rt_stride || t.depth != cur_.depth ||
 		t.depth_stride != cur_.depth_stride || t.width != cur_.width || t.height != cur_.height ||
-		t.vp_scale_z != cur_.vp_scale_z || t.vp_offset_z != cur_.vp_offset_z)
+		t.vp_scale_z != cur_.vp_scale_z || t.vp_offset_z != cur_.vp_offset_z || t.rt_linear != cur_.rt_linear)
 		dirty |= DirtyFramebuffer;
 
 	if (t.alpha_config != cur_.alpha_config || t.color_format != cur_.color_format)
@@ -927,9 +929,15 @@ bool Context::draw(const MeshDraw &d)
 		cs.set_state_reloc(PE_PIPE_COLOR_ADDR0, {d.rt, static_cast<uint32_t>(RelocRead | RelocWrite), 0});
 	}
 
-	if (dirty & DirtyStatic) {
+	if (dirty & DirtyStatic)
 		cs.set_state(PE_STENCIL_CONFIG_EXT, 0);
-		cs.set_state(PE_LOGIC_OP, PE_LOGIC_OP_COPY_SINGLEBUF);
+
+	// The target's memory layout: SINGLE_BUFFER picks tiled vs linear, so it
+	// belongs with the framebuffer group, not the invariant one.
+	if (dirty & (DirtyStatic | DirtyFramebuffer))
+		cs.set_state(PE_LOGIC_OP, t.rt_linear ? PE_LOGIC_OP_COPY_LINEAR : PE_LOGIC_OP_COPY_SINGLEBUF);
+
+	if (dirty & DirtyStatic) {
 		// Dither stays off (all-ones). Mesa disables dithering whenever blending
 		// is on for cores without PE_DITHER_FIX, as the two together visibly
 		// shift colors; we never dither, so there is nothing to switch.

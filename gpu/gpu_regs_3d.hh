@@ -177,7 +177,12 @@ constexpr uint32_t PE_HALTI4_UNK014C0 = 0x14C0;
 constexpr uint32_t PE_FORMAT_A8R8G8B8 = 6; // native BGRA8888 memory order
 constexpr uint32_t PE_COLOR_FORMAT_COMPONENTS_ALL = 0xF00;
 constexpr uint32_t PE_COLOR_FORMAT_OVERWRITE = 0x10000;
-constexpr uint32_t PE_LOGIC_OP_COPY_SINGLEBUF = 0x000E420C;
+// PE_LOGIC_OP: OP in [3:0], SINGLE_BUFFER in [9:8]. SINGLE_BUFFER selects the
+// render target's memory layout -- Mesa emits 2 (or 3 at 16bpp) for a tiled
+// target and 1 for a LINEAR one, gated on the LINEAR_PE feature bit
+// (chipMinorFeatures2 bit 4), which this core reports.
+constexpr uint32_t PE_LOGIC_OP_COPY_SINGLEBUF = 0x000E420C; // SINGLE_BUFFER=2, tiled
+constexpr uint32_t PE_LOGIC_OP_COPY_LINEAR = 0x000E410C;	// SINGLE_BUFFER=1, linear
 constexpr uint32_t PE_DEPTH_CONFIG_DISABLED = 0x01000700; // NONE|ALWAYS|DISABLE_ZS
 constexpr uint32_t RA_EARLY_DEPTH_DISABLED = 0x15000030;   // FORWARD_Z|W|WRITE_DISABLE
 // Depth test ON, D16, LESS, write-enabled, late-z (no EARLY_Z, no DISABLE_ZS):

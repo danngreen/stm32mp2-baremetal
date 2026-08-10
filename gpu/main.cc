@@ -312,6 +312,12 @@ int main()
 	if (ok)
 		ok = triangle_test(gpu);
 	if (ok)
+		ok = linear_rt_test(gpu);
+	if (ok)
+		ok = linear_rt_stride_test(gpu);
+	if (ok)
+		ok = linear_rt_depth_test(gpu);
+	if (ok)
 		ok = triangle_color_test(gpu);
 	if (ok)
 		ok = triangle_depth_test(gpu);

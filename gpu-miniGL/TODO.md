@@ -39,10 +39,35 @@ Options, roughly in effort order:
 
 ## Performance: GPU side (from the gpu/ handoff, still open)
 
-- **Linear render target?** If `PE_COLOR_FORMAT`'s tiling field allows a
-  LINEAR RT on this core (etnaviv supports it on some), LTDC could scan the
-  RT directly and the per-frame RS resolve (~1.5-2 ms at 720x1280)
-  disappears, along with the scanout copy.
+- **Linear render target: ANSWERED, and it is a trade, not a win.** The PE
+  *can* render untiled -- verified on hardware at every stride up to full
+  screen and with a depth buffer (`linear_rt_*` tests in gpu/). The layout is
+  not in `PE_COLOR_FORMAT` (which only has SUPER_TILED) but in
+  `PE_LOGIC_OP.SINGLE_BUFFER`: 2 = tiled, 1 = linear, gated on the LINEAR_PE
+  feature (chipMinorFeatures2 bit 4), which this core has.
+
+  It removes the per-frame resolve (~3 ms at 720x1280), but the PE writes an
+  untiled target more slowly, because a tile-shaped write scatters across
+  rows instead of landing in one burst. Measured end to end:
+
+  | sketch | tiled | direct linear |
+  | --- | --- | --- |
+  | Flocking (sparse) | 9.7 ms | **6.6 ms** |
+  | Brownian (sparse) | 5.6 ms | **3.4 ms** |
+  | Rotate_Push_Pop (fill-heavy 3D) | 10.8 ms | 13.4 ms |
+  | Radial_Gradient (fill-heavy 2D) | 166 ms | 378 ms |
+
+  So it pays only when a frame's fill is small enough that the resolve
+  dominates. It is implemented and off by default:
+  `make BOARD=devboard DIRECT_LINEAR=1`. Enabling it per sketch would need a
+  fill estimate the backend does not have; an adaptive version could time
+  both modes and keep the faster, which is the obvious next step if this
+  matters.
+
+  Related: a linear->linear RS blit measured **2.9x slower** than the
+  tiled->linear resolve (a copy-only frame: 8.9 ms vs 3.1 ms), so the RS
+  clearly prefers a tiled source. That is why the accumulate path still
+  renders tiled and resolves.
 - **Resolve async.** Even with tiling, the end-of-frame resolve is
   submit_and_wait'ed; the CPU could start the next frame's sim while the RS
   runs (needs a second RT or careful fencing).

@@ -60,6 +60,11 @@ INCLUDES += -I$(SHAREDDIR)/STM32MP2xx_HAL_Driver/Inc
 INCLUDES += -I$(BUILDDIR) # for the generated pde_prototypes.hh
 
 EXTRA_ARCH_CFLAGS := -DUSE_HAL_DRIVER
+# Skip the per-frame RS resolve on frames that open with a full clear.
+ifeq ($(DIRECT_LINEAR),1)
+EXTRA_ARCH_CFLAGS += -DDIRECT_LINEAR=1
+CONFIG_STAMP_VALS += directlinear
+endif
 
 # A sketch folder's several .pde "tabs" are one translation unit (see
 # sketch_pde.cc), so all of them are inputs to the generated headers.
