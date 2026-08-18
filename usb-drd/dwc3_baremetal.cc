@@ -31,12 +31,12 @@ struct dwc3 *dwc3_baremetal_init(dwc3_dr_mode_t mode, const dwc3_platform_t *pla
 		reg14.CIDCFGR = RISAF_REGCIDCFGR_RDEN | RISAF_REGCIDCFGR_WREN;
 		reg14.CFGR = RISAF_REGCFGR_BREN;
 
-		// Region 13: Heap/RAM at 0x90000000 (RISAF addr 0x10000000)
+		// Region 13: app image incl. heap at 0x88000000 (RISAF addr 0x08000000)
 		// Needed for xHCI host mode which uses memalign() from the heap.
 		auto &reg13 = RISAF4->REG[13];
 		reg13.CFGR &= ~RISAF_REGCFGR_BREN;
-		reg13.STARTR = 0x10000000;
-		reg13.ENDR = 0x10FFFFFF;
+		reg13.STARTR = 0x08000000;
+		reg13.ENDR = 0x08FFFFFF;
 		reg13.CIDCFGR = RISAF_REGCIDCFGR_RDEN | RISAF_REGCIDCFGR_WREN;
 		reg13.CFGR = RISAF_REGCFGR_BREN;
 	}
