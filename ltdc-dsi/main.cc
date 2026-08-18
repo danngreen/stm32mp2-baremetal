@@ -28,7 +28,7 @@ namespace
 
 constexpr uint32_t FbAddr = 0x90000000;
 
-#define PATTERN_TEST 1
+#define PATTERN_TEST 3
 
 // A test pattern that makes scanout bugs obvious: RGB gradient field, 1px white
 // border (offset/timing errors show as a missing/wrapped edge), and the x^y hash
@@ -58,6 +58,9 @@ void fill_test_pattern(std::span<uint32_t> fb)
 				px = 0xFFFF0000;
 			else
 				px = ((y & 1) && (x & 1)) ? 0xFFFFFFFF : 0xFF000000;
+#elif PATTERN_TEST == 3
+
+			uint32_t px = 0xFFFFFFFF;
 #endif
 			fb[y * HActive + x] = px;
 		}
