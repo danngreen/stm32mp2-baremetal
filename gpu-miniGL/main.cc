@@ -34,8 +34,15 @@ using namespace mgl;
 namespace
 {
 using namespace Panel; // EV1 LVDS: 1024x600  /  devboard DSI: 720x1280
-constexpr uint32_t FbStride = HActive * 4;
-constexpr uint32_t FbSize = FbStride * VActive;
+#ifdef LANDSCAPE
+// The panel is portrait; the LTDC rotates at scanout, so everything above the
+// display driver -- framebuffers, mini-GL, the sketch -- is landscape.
+constexpr uint32_t SurfaceW = VActive, SurfaceH = HActive;
+#else
+constexpr uint32_t SurfaceW = HActive, SurfaceH = VActive;
+#endif
+constexpr uint32_t FbStride = SurfaceW * 4;
+constexpr uint32_t FbSize = FbStride * SurfaceH;
 } // namespace
 
 extern "C" int uart_getchar(void); // shared/print/uart_print.c, non-blocking
@@ -62,6 +69,22 @@ static void poll_keys()
 			mousePressed();
 			continue;
 		}
+#ifdef LANDSCAPE
+		// Bring-up aid: 1..4 pick how the layer walks the framebuffer while we
+		// work out what the rotation datapath wants. See ltdc_set_scan_mode.
+		if (c >= '1' && c <= '4') {
+			const unsigned m = unsigned(c - '1');
+			ltdc_set_scan_mode(m);
+			print("scan mode ",
+				  int(m),
+				  ": pitch ",
+				  (m & 1) ? "NEGATIVE" : "raw",
+				  ", base ",
+				  (m & 2) ? "LAST line" : "first line",
+				  "\n");
+			continue;
+		}
+#endif
 		key = char(c);
 		keyCode = c;
 		_keyPressed = true;
@@ -90,8 +113,25 @@ int main()
 	// inside setup(), which needs the backend up first.
 	// 8 MB vertex arena: a dense sketch (Game of Life is ~14 MB of vertex data
 	// a frame) then splits into 2 arena flushes instead of 28.
+#ifdef LANDSCAPE
+	// make BOARD=devboard LANDSCAPE=1 -- reserve the controller's two RGB24
+	// intermediate frames before the display comes up.
+	{
+		// Size from the LARGEST pitch we may sweep, so the two intermediate
+		// buffers never overlap whatever pitch is selected.
+		const uint32_t rot_bytes = ltdc_rotation_bytes();
+		etna::Bo rot = gpu.alloc(rot_bytes * 2, 64);
+		if (!rot) {
+			print("FAILED: rotation buffer alloc (", rot_bytes, " bytes)\n");
+			panic();
+		}
+		ltdc_enable_rotation(rot.gpu_addr(), rot_bytes);
+		print("LTDC rotation: ON, ", rot_bytes, " bytes at 0x", Hex{rot.gpu_addr()}, "\n");
+	}
+#endif
+
 	static mgl::GpuBackend be;
-	if (!be.init(gpu, HActive, VActive, /*with_depth=*/true, 8 * 1024 * 1024)) {
+	if (!be.init(gpu, SurfaceW, SurfaceH, /*with_depth=*/true, 8 * 1024 * 1024)) {
 		print("FAILED: mini-GL backend init\n");
 		panic();
 	}
@@ -116,8 +156,8 @@ int main()
 		fb.cpu_fini(etna::RelocWrite);
 	}
 
-	width = HActive;
-	height = VActive;
+	width = SurfaceW;
+	height = SurfaceH;
 
 	// Run setup() inside a real frame, resolved into the first scanout
 	// buffer: Processing presents whatever setup() draws (many sketches only
@@ -135,19 +175,24 @@ int main()
 	// does, under noLoop()), so present that here as well as in the loop.
 	if (const int *px = psk_live_pixels()) {
 		auto dst = fbs[0].span<uint32_t>();
-		std::copy_n(reinterpret_cast<const uint32_t *>(px), size_t(HActive) * VActive, dst.begin());
+		std::copy_n(reinterpret_cast<const uint32_t *>(px), size_t(SurfaceW) * SurfaceH, dst.begin());
 		fbs[0].cpu_fini(etna::RelocWrite);
 	}
 	// A "static mode" sketch does all its drawing here and leaves draw()
 	// empty, so this is the only evidence it rendered anything at all.
-	print("setup frame: ", be.draws_submitted(), " draw(s), ", be.stream_dwords(), " dwords",
-		  psk_wants_3d() ? " [P3D]" : "", "\n");
+	print("setup frame: ",
+		  be.draws_submitted(),
+		  " draw(s), ",
+		  be.stream_dwords(),
+		  " dwords",
+		  psk_wants_3d() ? " [P3D]" : "",
+		  "\n");
 
 	if (!display_init(fbs[0].gpu_addr())) {
 		print("FAILED: display PLL never locked\n");
 		panic();
 	}
-	print("Display up: ", int(HActive), "x", int(VActive), ", sketch running\n");
+	print("Display up: ", int(SurfaceW), "x", int(SurfaceH), ", sketch running\n");
 
 	std::atomic<bool> frame_ready{};
 	ltdc_set_callback([&] { frame_ready.store(true, std::memory_order_release); });
@@ -184,7 +229,7 @@ int main()
 		// buffer about to be scanned out -- after the resolve, so it wins.
 		if (const int *px = psk_live_pixels()) {
 			auto dst = fbs[cur].span<uint32_t>();
-			std::copy_n(reinterpret_cast<const uint32_t *>(px), size_t(HActive) * VActive, dst.begin());
+			std::copy_n(reinterpret_cast<const uint32_t *>(px), size_t(SurfaceW) * SurfaceH, dst.begin());
 			fbs[cur].cpu_fini(etna::RelocWrite);
 		}
 		frameCount++;
@@ -205,6 +250,25 @@ int main()
 			panic();
 		}
 
+#ifdef LANDSCAPE_NO
+		// Rotation bring-up: walk the four framebuffer-scan combinations on a
+		// timer, 5 s each, so it needs no console input (the UART logger owns
+		// the port). Watch the panel and note which phase looks right.
+		{
+			static uint32_t last_switch = 0;
+			static unsigned phase = 0;
+			const uint32_t now_ms = uint32_t(read_cntpct() / (tick_khz ? tick_khz : 1));
+			static const uint32_t kPitches[] = {2160, 2176, 2304, 3840, 4608, 8192};
+			if (now_ms - last_switch >= 5000) {
+				last_switch = now_ms;
+				const uint32_t p = kPitches[phase];
+				ltdc_set_rotation_pitch(p);
+				print(">>> rotation pitch ", int(phase + 1), " of 6 = ", p, " bytes/line\n");
+				phase = (phase + 1) % 6;
+			}
+		}
+#endif
+
 		const uint32_t render_us = (read_cntpct() - r0) * 1000 / tick_khz;
 		worst_us = std::max(worst_us, render_us);
 
@@ -223,7 +287,12 @@ int main()
 			started = true;
 			// Immediate feedback for slow sketches (frameRate(1) would
 			// otherwise stay silent for two minutes).
-			print("first frame: ", render_us, " us, ", be.draws_submitted(), " draw(s), ", be.stream_dwords(),
+			print("first frame: ",
+				  render_us,
+				  " us, ",
+				  be.draws_submitted(),
+				  " draw(s), ",
+				  be.stream_dwords(),
 				  " dwords\n");
 			t0 = read_cntpct();
 			frames = 0;
@@ -234,9 +303,20 @@ int main()
 			const uint32_t elapsed_us = (now - t0) * 1000 / tick_khz;
 			if (elapsed_us >= 2000000) {
 				const uint32_t avg_us = elapsed_us / frames;
-				print(avg_us ? (1000000 + avg_us / 2) / avg_us : 0, " fps (avg ", avg_us, " us/frame, worst render ",
-					  worst_us, " us), ", be.draws_submitted(), " draw(s), ", be.stream_dwords(), " dwords, mouse ",
-					  mouseX, ",", mouseY, "\n");
+				print(avg_us ? (1000000 + avg_us / 2) / avg_us : 0,
+					  " fps (avg ",
+					  avg_us,
+					  " us/frame, worst render ",
+					  worst_us,
+					  " us), ",
+					  be.draws_submitted(),
+					  " draw(s), ",
+					  be.stream_dwords(),
+					  " dwords, mouse ",
+					  mouseX,
+					  ",",
+					  mouseY,
+					  "\n");
 				t0 = now;
 				worst_us = 0;
 				frames = 0;
@@ -246,6 +326,4 @@ int main()
 }
 
 extern "C" void assert_failed(uint8_t *file, uint32_t line)
-{
-	print("assert failed: ", file, ":", int(line), "\n");
-}
+{ print("assert failed: ", file, ":", int(line), "\n"); }

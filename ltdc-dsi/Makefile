@@ -32,6 +32,11 @@ INCLUDES += -I$(SHAREDDIR)/STM32MP2xx_HAL_Driver/Inc
 
 EXTRA_ARCH_CFLAGS := -DUSE_HAL_DRIVER
 
+ifeq ($(LANDSCAPE),1)
+EXTRA_ARCH_CFLAGS += -DLANDSCAPE=1
+CONFIG_STAMP_VALS += landscape
+endif
+
 # The ER-TFT050-10 MIPI-DSI panel only exists on the custom devboard, so build
 # for it by default: this selects the USART1 console (PB8/PB10) and defines
 # DEVBOARD_0_1. (See shared/makefile-common.mk.)

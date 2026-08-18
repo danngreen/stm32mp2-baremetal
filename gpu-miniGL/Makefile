@@ -61,6 +61,11 @@ INCLUDES += -I$(BUILDDIR) # for the generated pde_prototypes.hh
 
 EXTRA_ARCH_CFLAGS := -DUSE_HAL_DRIVER
 # Skip the per-frame RS resolve on frames that open with a full clear.
+# Drive the portrait panel as a landscape surface via LTDC hardware rotation.
+ifeq ($(LANDSCAPE),1)
+EXTRA_ARCH_CFLAGS += -DLANDSCAPE=1
+CONFIG_STAMP_VALS += landscape
+endif
 ifeq ($(DIRECT_LINEAR),1)
 EXTRA_ARCH_CFLAGS += -DDIRECT_LINEAR=1
 CONFIG_STAMP_VALS += directlinear
