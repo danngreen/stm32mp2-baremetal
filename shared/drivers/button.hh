@@ -33,7 +33,8 @@ inline void button_user2_init()
 inline bool button_user2_pressed()
 {
 #ifdef DEVBOARD_0_1
-	return (GPIOB->IDR & (1 << 1));
+	// USB-DFU button: idles high, pressing pulls PB1 low
+	return !(GPIOB->IDR & (1 << 1));
 #else
 	return (GPIOG->IDR & (1 << 8));
 #endif
