@@ -9,6 +9,10 @@
 
 namespace
 {
+// CS: B14 (PF4)
+// SDA: B16 (PA12)
+// SCL: B20 (PF5)
+// RST: not connected
 constexpr GPIO CsPort = GPIO::F;
 constexpr uint8_t CsPin = PinNum::_4;
 constexpr GPIO MosiPort = GPIO::A;
